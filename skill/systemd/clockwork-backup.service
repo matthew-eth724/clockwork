@@ -1,0 +1,17 @@
+[Unit]
+Description=Clockwork Engineering database backup (dump + verify)
+Documentation=file:///home/matthew/projects/clockwork/README.md
+After=docker.service
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/matthew/projects/clockwork
+# A backup that is not verified is not a backup, so verification stays on.
+# Retention keeps disk usage bounded; tune with CLOCKWORK_BACKUP_KEEP.
+Environment=CLOCKWORK_BACKUP_KEEP=48
+ExecStart=/home/matthew/projects/clockwork/scripts/backup
+# Do not spam the journal with a failure every hour if docker is down; the
+# timer's own status and the absence of a fresh dump are the signal.
+SuccessExitStatus=0
+Nice=10
+IOSchedulingClass=idle

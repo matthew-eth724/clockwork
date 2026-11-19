@@ -36,6 +36,19 @@ PYTHONPATH=. ./.venv/bin/python -m clockwork.demo   # end-to-end, RED -> GREEN
 scripts/check-responsive                            # layout at 12 widths
 ```
 
+## The database may hold the user's real work
+
+`clockwork-run reset` drops the whole `cw` schema. This destroyed 22 cases
+including a live investigation once. Treat the database as precious:
+
+- **Back up before anything destructive:** `scripts/backup` (dumps and verifies).
+- **Never reset to "clean up" after a test.** Use a throwaway case id instead.
+- **The reset command now refuses** when non-demo cases exist. Do not reach for
+  `--force` to get past that guard; it is telling you something.
+- Verification restores into a throwaway container and replays the log. If you
+  change the projection, re-run `scripts/backup` and confirm old dumps still
+  verify — a projection change can break replay of historical data.
+
 ## Traps that cost real debugging time
 
 These are not hypothetical. Each one bit during construction.
@@ -112,3 +125,25 @@ artifacts.
 
 State what you changed, what you ran, and what you did not verify. Do not
 summarise at length or re-prove green checks.
+
+## UI
+
+The dashboard is a React SPA in `ui/`, built with Vite to `web/app/` (generated,
+untracked) and served by FastAPI with an SPA fallback so `/case/<id>` survives a
+hard refresh. The old Jinja templates were removed; do not reintroduce a second
+rendering path.
+
+Live updates are incremental by design: the client sends `?after=<seq>` and
+receives only new events. Keep it that way — re-fetching the whole log on a timer
+would make an idle tab cost the same as an active one.
+
+```bash
+cd ui && npm install
+npm run dev              # :5173, proxies /api to :8899
+npm run build            # must be run before the FastAPI-served UI reflects changes
+ui/check-live <case_id>  # proves a live update without reload, in a browser
+```
+
+`ui/check-live` appends a real event to the case it checks. Run it against the
+demo case only after a reset, or expect the seal barrier to reject a re-run of
+`clockwork.demo` on a case that already has sealed orbits.

@@ -7,7 +7,8 @@
 #   clockwork-run gates <case> <lane>    # show gate state and what is missing
 #   clockwork-run chain <case>           # verify the event hash chain
 #   clockwork-run start                  # serve API + dashboard on :8899
-#   clockwork-run reset                  # drop the schema (dev only)
+#   clockwork-run reset                  # drop the schema (refuses if real cases exist)
+#   clockwork-run reset --force          # drop regardless (take a backup first)
 
 set -euo pipefail
 
@@ -29,6 +30,8 @@ require_install() {
 }
 
 cmd="${1:-}"; [[ -n "$cmd" ]] || usage; shift || true
+FORCE=0
+for _a in "$@"; do [[ "$_a" == "--force" ]] && FORCE=1; done
 
 case "$cmd" in
   health)
@@ -100,9 +103,32 @@ EOF
 
   reset)
     require_install
-    echo "dropping schema cw — this deletes all cases and events"
-    read -r -p "type YES to continue: " confirm
-    [[ "$confirm" == "YES" ]] || { echo "aborted"; exit 1; }
+    # Show exactly what would be destroyed before destroying it. Cases other
+    # than the demo are treated as real work and require --force.
+    COUNT="$(docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
+      "SELECT count(*) FROM cw.case;" 2>/dev/null || echo 0)"
+    COUNT="${COUNT//[^0-9]/}"; COUNT="${COUNT:-0}"
+    if [[ "$COUNT" -gt 0 ]]; then
+      echo "The following will be permanently deleted:"
+      docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
+        "SELECT '  '||c.case_id||'  ('||(SELECT count(*) FROM cw.case_event e
+            WHERE e.case_id=c.case_id)||' events)  '||c.title
+           FROM cw.case c ORDER BY c.created_at;" 2>/dev/null || true
+      NON_DEMO="$(docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -tAc \
+        "SELECT count(*) FROM cw.case WHERE case_id <> 'CW-2026-0007';" 2>/dev/null || echo 0)"
+      NON_DEMO="${NON_DEMO//[^0-9]/}"; NON_DEMO="${NON_DEMO:-0}"
+      if [[ "$FORCE" != "1" && "$NON_DEMO" -gt 0 ]]; then
+        echo ""
+        echo "REFUSING: $NON_DEMO case(s) aside from the demo case are present."
+        echo "Take a backup first:  scripts/backup"
+        echo "Then, if you really mean it:  clockwork-run reset --force"
+        exit 1
+      fi
+      read -r -p "Type the number of cases to delete ($COUNT) to continue: " confirm
+      [[ "$confirm" == "$COUNT" ]] || { echo "aborted"; exit 1; }
+    else
+      echo "schema is empty; nothing to lose"
+    fi
     docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -c "DROP SCHEMA IF EXISTS cw CASCADE;"
     "$PY" -c "from clockwork.runtime import Runtime; Runtime().boot(); print('schema rebuilt')"
     ;;

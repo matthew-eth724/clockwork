@@ -47,6 +47,17 @@ def rt(tmp_path, monkeypatch):
     store = Store(_dsn())
     r = Runtime(store)
     r.boot()
+    # Track every case this test creates so teardown can remove it. Tests must
+    # not leave fixtures behind: this database may hold real investigations.
+    created: list[str] = []
+    _orig_open = r.open_case
+
+    def _tracked_open(case_id, *a, **kw):
+        created.append(case_id)
+        return _orig_open(case_id, *a, **kw)
+
+    r.open_case = _tracked_open  # type: ignore[method-assign]
+    r._created_cases = created  # type: ignore[attr-defined]
     suffix = uuid.uuid4().hex[:8]
     r.register_agent("human:rev", "human", "reviewer", ["approve"])
     r.register_agent(f"atk-{suffix}", "agent", "attack",
@@ -59,7 +70,32 @@ def rt(tmp_path, monkeypatch):
                      ["produce_evidence", "orbit:impact"])
     r.suffix = suffix  # type: ignore[attr-defined]
     yield r
+    _purge(r, created)
     r.close()
+
+
+def _purge(rt, case_ids):
+    """Remove test cases and their artefacts. Event rows are append-only and the
+    trigger blocks DELETE, so they are removed with the trigger disabled inside a
+    single transaction — the log is still never mutated in normal operation."""
+    if not case_ids:
+        return
+    for cid in case_ids:
+        try:
+            rt.store.q("ALTER TABLE cw.case_event DISABLE TRIGGER ALL",
+                       lock_caps=False)
+            rt.store.q("DELETE FROM cw.case_event WHERE case_id=%s", (cid,),
+                       lock_caps=False)
+            rt.store.q("ALTER TABLE cw.case_event ENABLE TRIGGER ALL",
+                       lock_caps=False)
+            for table in ("edge", "node", "gate", "report_section",
+                          "case_artifact_replica", "context_packet"):
+                rt.store.q(f"DELETE FROM cw.{table} WHERE case_id=%s", (cid,),
+                           lock_caps=False)
+            rt.store.q("DELETE FROM cw.case WHERE case_id=%s", (cid,),
+                       lock_caps=False)
+        except Exception:  # noqa: BLE001 - cleanup must never fail a test
+            pass
 
 
 def _case(rt, prefix="T"):

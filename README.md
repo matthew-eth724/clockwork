@@ -220,6 +220,59 @@ PYTHONPATH=. ./.venv/bin/python -m uvicorn clockwork.api:app --port 8899
 #    → http://localhost:8899/case/CW-2026-0007
 ```
 
+### Backup and restore
+
+```bash
+scripts/backup              # dump and verify (default)
+scripts/backup --list       # show existing backups
+scripts/backup --keep 12    # retention: newest 12 dumps
+scripts/backup --gc         # prune only
+scripts/backup --no-verify  # skip the restore check (not recommended)
+```
+
+It exits non-zero when anything is wrong: container down, empty database,
+failed restore, or a chain that does not verify. A backup that "succeeds"
+silently is worse than no backup.
+
+A dump is written to `backups/` with a `.meta` sidecar recording the case/event
+counts and git commit. Verification is the default because an unverified backup
+is not a backup: the dump is restored into a throwaway Postgres container, every
+case's hash chain is checked, and the event log is replayed to confirm the
+projections rebuild to the same branch states.
+
+Restoring by hand:
+
+```bash
+docker exec -i <container> pg_restore -U clockwork -d clockwork --no-owner < backups/cw-*.dump
+```
+
+Note that `node`/`edge` tables come back **empty** — they are projections. Replay
+the log (`materialize`) and the graph rebuilds; the chain is the thing that must
+survive, and it does.
+
+### Scheduled backups
+
+```bash
+cp skill/systemd/clockwork-backup.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now clockwork-backup.timer
+systemctl --user list-timers clockwork-backup.timer   # next fire time
+journalctl --user -u clockwork-backup.service -n 20   # what happened
+```
+
+Hourly, with `RandomizedDelaySec=300` and `Persistent=true` so a slept machine
+runs once on wake rather than replaying every missed hour. Retention keeps the
+newest 48 dumps; tune with `CLOCKWORK_BACKUP_KEEP`.
+
+Backups live in `backups/` on the same disk as the database. That protects
+against mistakes — a bad migration, a wrong reset — but **not** against disk
+failure or theft. Copy `backups/` somewhere else periodically if the data
+matters.
+
+A failed run marks the unit failed, so `systemctl --user list-timers` and the
+journal show it. There is no email or notification; if you want alerting, that is
+the thing to add next.
+
 ### Reset a local database
 
 ```bash
@@ -228,6 +281,10 @@ docker exec clockwork-pg psql -U clockwork -d clockwork -c "DROP SCHEMA cw CASCA
 
 `case_event` refuses `TRUNCATE` by design; dropping the schema is the sanctioned
 reset.
+
+`clockwork-run reset` lists exactly what it will delete and **refuses** if any
+case other than the demo exists, pointing you at `scripts/backup` instead.
+Override with `--force` once you have a backup.
 
 ## Using it from an agent
 
@@ -261,7 +318,37 @@ skill/scripts/clockwork-run chain CW-2026-0007
 skill/scripts/clockwork-run start      # API + dashboard on :8899
 ```
 
-## Responsive dashboard
+## Dashboard (React, live)
+
+The UI is a React SPA in `ui/`, built to `web/app/` and served by FastAPI. It
+updates in real time — no refresh — by polling the append-only log
+incrementally:
+
+- the client asks for events with `seq > last_seen`
+- an idle case costs one tiny response per tick (`changed: false`)
+- a new event returns only the delta, which the client merges
+- polling pauses while the tab is hidden and catches up in one delta on return
+- `/api/cases/{id}/stream` offers a Server-Sent Events variant (`strategy: 'events'`)
+
+New event rows highlight briefly, and a passing gate flashes once, so live
+activity is visible without losing your reading position.
+
+```bash
+cd ui && npm install
+npm run dev      # http://localhost:5173, proxies /api to :8899
+npm run build    # writes web/app, served by FastAPI
+```
+
+Verify the live update in a real browser:
+
+```bash
+ui/check-live CW-2026-0007
+```
+
+It records the DOM, appends a real event server-side, and asserts the row count
+grew **without a reload** (a `window` marker survives to prove no navigation).
+
+### Responsive
 
 Both pages work from a 320px phone to a 4K desktop. Layout is verified with a
 real browser rather than by eye:
@@ -300,7 +387,8 @@ clockwork/
 tests/test_clockwork.py   26 invariant tests
 skill/                    Agent Skill: driving a case end to end
 scripts/check-responsive  real-browser layout overflow check
-web/templates/            evidence-clock dashboard
+ui/                       React SPA (Vite) + live-update browser check
+web/app/                  built UI bundle (generated, untracked)
 ```
 
 ## API surface

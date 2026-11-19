@@ -4,3 +4,10 @@ __pycache__/
 *.pyc
 .pytest_cache/
 node_modules/
+
+# UI build output and dependencies
+ui/node_modules/
+web/app/
+
+# Local database backups (contain case data)
+backups/
