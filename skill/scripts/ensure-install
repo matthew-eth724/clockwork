@@ -1,0 +1,157 @@
+#!/usr/bin/env bash
+# ensure-install — make sure Clockwork is installed and usable.
+#
+# Idempotent: if an install already works, it says so and exits 0.
+# Otherwise it clones from GitHub, creates the venv, boots the schema,
+# and starts Postgres if the container exists.
+#
+# Usage:
+#   ensure-install                 # install to ~/.clockwork if needed
+#   ensure-install --dir /opt/cw   # install somewhere else
+#   ensure-install --check         # verify only, never install (exit 1 if absent)
+#
+# Environment:
+#   CLOCKWORK_HOME  existing install to reuse (skips cloning entirely)
+
+set -euo pipefail
+
+REPO_URL="${CLOCKWORK_REPO_URL:-https://github.com/matthew-eth724/clockwork.git}"
+DEFAULT_DIR="${HOME}/.clockwork"
+PG_CONTAINER="${CLOCKWORK_PG_CONTAINER:-clockwork-pg}"
+DSN_DEFAULT="postgresql://clockwork:clockwork@localhost:55432/clockwork"
+
+TARGET=""
+CHECK_ONLY=0
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --dir)   TARGET="${2:-}"; shift 2 ;;
+    --check) CHECK_ONLY=1; shift ;;
+    -h|--help) sed -n '2,16p' "$0" | sed 's/^# \{0,1\}//'; exit 0 ;;
+    *) echo "unknown arg: $1" >&2; exit 2 ;;
+  esac
+done
+
+say()  { printf '%s\n' "$*"; }
+fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
+
+# Is this directory a working Clockwork install?
+usable() {
+  local dir="$1"
+  [[ -n "$dir" && -f "$dir/clockwork/runtime.py" ]] || return 1
+  [[ -x "$dir/.venv/bin/python" ]] || return 1
+  ( cd "$dir" && PYTHONPATH="$dir" ./.venv/bin/python -c \
+      "import psycopg, fastapi, clockwork" >/dev/null 2>&1 ) || return 1
+  return 0
+}
+
+# Repo root containing this script, if any (skill/scripts/ -> ../../)
+self_root() {
+  ( cd "$(dirname "${BASH_SOURCE[0]}")/../.." 2>/dev/null && pwd ) || true
+}
+
+locate_existing() {
+  # 1. explicit request wins
+  if [[ -n "${CLOCKWORK_HOME:-}" && -d "$CLOCKWORK_HOME" ]]; then
+    echo "$CLOCKWORK_HOME"; return 0
+  fi
+  # 2. an explicit --dir is a *request to install there*, not a lookup hint
+  if [[ -n "$TARGET" ]]; then
+    if [[ -f "$TARGET/clockwork/runtime.py" ]]; then echo "$TARGET"; return 0; fi
+    return 1
+  fi
+  # 3. the checkout this script lives in, then the default install location
+  local self; self="$(self_root)"
+  for candidate in "$self" "${DEFAULT_DIR}"; do
+    if [[ -n "$candidate" && -f "$candidate/clockwork/runtime.py" ]]; then
+      echo "$candidate"; return 0
+    fi
+  done
+  return 1
+}
+
+# ---- 1. already installed? ---------------------------------------------------
+if FOUND="$(locate_existing)"; then
+  if usable "$FOUND"; then
+    say "clockwork: already installed and usable at $FOUND"
+    say "CLOCKWORK_HOME=$FOUND"
+    exit 0
+  fi
+  say "clockwork: found at $FOUND but dependencies are incomplete; repairing"
+  INSTALL_DIR="$FOUND"
+else
+  if [[ "$CHECK_ONLY" == "1" ]]; then
+    fail "clockwork is not installed (run without --check to install)"
+  fi
+  INSTALL_DIR="${TARGET:-$DEFAULT_DIR}"
+  say "clockwork: not found; installing to $INSTALL_DIR"
+  if [[ -d "$INSTALL_DIR" && -n "$(ls -A "$INSTALL_DIR" 2>/dev/null)" ]]; then
+    fail "$INSTALL_DIR exists and is not empty — rerun with --dir <empty path>"
+  fi
+  command -v git >/dev/null || fail "git is required to install"
+  mkdir -p "$(dirname "$INSTALL_DIR")"
+  git clone --depth 1 "$REPO_URL" "$INSTALL_DIR"
+fi
+
+if [[ "$CHECK_ONLY" == "1" ]]; then
+  fail "clockwork at $INSTALL_DIR is not usable"
+fi
+
+cd "$INSTALL_DIR"
+
+# ---- 2. python env -----------------------------------------------------------
+if [[ ! -x .venv/bin/python ]]; then
+  say "clockwork: creating venv"
+  python3 -m venv .venv
+fi
+say "clockwork: installing python dependencies"
+./.venv/bin/pip install -q --upgrade pip
+./.venv/bin/pip install -q "psycopg[binary]" fastapi "uvicorn[standard]" jinja2 pydantic
+./.venv/bin/pip install -q pytest || true
+
+# ---- 3. postgres -------------------------------------------------------------
+say "clockwork: checking postgres"
+if ! ( cd . && PYTHONPATH=. ./.venv/bin/python - "$DSN_DEFAULT" >/dev/null 2>&1 <<'PY'
+import sys, psycopg
+try:
+    psycopg.connect(sys.argv[1], connect_timeout=3).close()
+except Exception:
+    raise SystemExit(1)
+PY
+); then
+  if command -v docker >/dev/null 2>&1; then
+    if docker ps -a --format '{{.Names}}' | grep -qx "$PG_CONTAINER"; then
+      say "clockwork: starting existing container $PG_CONTAINER"
+      docker start "$PG_CONTAINER" >/dev/null
+    else
+      say "clockwork: creating container $PG_CONTAINER"
+      docker run -d --name "$PG_CONTAINER" \
+        -e POSTGRES_PASSWORD=clockwork -e POSTGRES_USER=clockwork \
+        -e POSTGRES_DB=clockwork -p 55432:5432 postgres:17-alpine >/dev/null
+    fi
+    printf 'clockwork: waiting for postgres'
+    for _ in $(seq 1 30); do
+      if docker exec "$PG_CONTAINER" pg_isready -U clockwork -d clockwork >/dev/null 2>&1; then
+        printf ' ready\n'; break
+      fi
+      printf '.'; sleep 1
+    done
+  else
+    fail "postgres unreachable at $DSN_DEFAULT and docker is not available.
+       Start a Postgres 15+ instance and set CLOCKWORK_DSN."
+  fi
+fi
+
+# ---- 4. schema ---------------------------------------------------------------
+say "clockwork: booting schema"
+PYTHONPATH=. ./.venv/bin/python -c "from clockwork.runtime import Runtime; Runtime().boot()"
+
+# ---- 5. verify ---------------------------------------------------------------
+if usable "$INSTALL_DIR"; then
+  say "clockwork: installed and verified at $INSTALL_DIR"
+  say "CLOCKWORK_HOME=$INSTALL_DIR"
+  say ""
+  say "try:  PYTHONPATH=. ./.venv/bin/python -m clockwork.demo"
+  say "      ./skill/scripts/clockwork-run health"
+else
+  fail "install completed but verification failed at $INSTALL_DIR"
+fi

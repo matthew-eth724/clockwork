@@ -18,6 +18,7 @@ or it doesn't.
 
 Teach an agent to run one investigation end to end:
 
+0. make sure it is installed at all (clone from GitHub if not)
 1. open a case
 2. seed hypotheses on lanes
 3. run four blind orbits (attack, defense, history, impact)
@@ -29,22 +30,9 @@ Teach an agent to run one investigation end to end:
 
 ## Prerequisites
 
-Before step 1, confirm:
-
-- You have the Clockwork repo checked out. `scripts/clockwork-run` resolves the
-  repo root from its own location; override with `CLOCKWORK_HOME` if you move it.
-- Postgres is reachable. Default DSN: `postgresql://clockwork:clockwork@localhost:55432/clockwork`
+- Default DSN: `postgresql://clockwork:clockwork@localhost:55432/clockwork`,
   overridable with `CLOCKWORK_DSN`.
-- The Python venv exists at `<path>/.venv`.
-
-```bash
-cd "$(git rev-parse --show-toplevel)"   # or wherever you cloned clockwork
-docker ps --format '{{.Names}}\t{{.Status}}' | grep clockwork-pg || \
-  docker run -d --name clockwork-pg \
-    -e POSTGRES_PASSWORD=clockwork -e POSTGRES_USER=clockwork \
-    -e POSTGRES_DB=clockwork -p 55432:5432 postgres:17-alpine
-PYTHONPATH=. ./.venv/bin/python -c "from clockwork.runtime import Runtime; r=Runtime(); r.boot(); print('ready')"
-```
+- Python 3.11+ and `git` on PATH. Docker only if Postgres is not already running.
 
 Read `references/api-reference.md` before writing any API calls. Read
 `references/gate-reference.md` before you attempt to advance a gate — it lists
@@ -52,7 +40,60 @@ each gate's exact predicate in plain language.
 
 ## Procedure
 
-### Step 0 — Decide which interface you're using
+### Step 0 (mandatory) — make sure Clockwork is installed
+
+Do this **before anything else**. Do not assume a checkout exists, and do not ask
+the user to install it manually — the bootstrap handles both cases.
+
+```bash
+# Find it if present, install from GitHub if not. Idempotent.
+./scripts/ensure-install          # from inside the skill folder
+```
+
+`scripts/ensure-install` resolves in this order:
+
+1. `CLOCKWORK_HOME`, if set
+2. an explicit `--dir` target (a request to install *there*)
+3. the checkout the script lives in
+4. `~/.clockwork` (default install location)
+
+If none is a working install, it clones
+`https://github.com/matthew-eth724/clockwork.git`, creates the venv, starts the
+Postgres container (`docker`), boots the schema, and verifies with a real import.
+On success it prints `CLOCKWORK_HOME=<path>` — **use that path for every
+subsequent command.**
+
+Use `--check` when you only want to know whether an install exists (exit 1 if
+not, no side effects). Use `--dir <path>` to pin the install location.
+
+```bash
+./scripts/ensure-install --check              # verify only
+./scripts/ensure-install --dir /opt/clockwork # install to a specific place
+```
+
+Then confirm, using the path it printed:
+
+```bash
+cd "$CLOCKWORK_HOME"
+./skill/scripts/clockwork-run health
+```
+
+Expected: `postgres: up`, `schema: ready (64 logical shards)`.
+
+If it fails because Docker is unavailable and no Postgres is reachable, **stop
+and tell the user** what to install. Do not try to substitute SQLite or an
+in-memory database — the schema depends on Postgres triggers for append-only
+enforcement and capability locking.
+
+### If you are not inside the skill folder
+
+`ensure-install` is self-locating, so an absolute path works:
+
+```bash
+~/.agents/skills/clockwork-engineering/scripts/ensure-install
+```
+
+### Step 1 — Decide which interface you're using
 
 Pick one and stay consistent. Mixing them is fine (same database), but don't
 copy IDs across without checking.
@@ -62,7 +103,7 @@ copy IDs across without checking.
 - **HTTP API**: `uvicorn clockwork.api:app --port 8899`, then `POST`/`GET`.
 - **Dashboard** (read-only, for the human): `http://localhost:8899/case/<case_id>`
 
-### Step 1 — Open a case
+### Step 2 — Open a case
 
 You need a case id, a repo, and a **scope snapshot including a commit sha**. The
 commit is not decoration: evidence gets bound to it, and `STALE` is derived from
@@ -73,7 +114,7 @@ carries `repo_id` and `commit_range`.
 
 Verify: `runtime.placement(case_id)` returns a shard id and a primary + replica.
 
-### Step 2 — Seed hypotheses
+### Step 3 — Seed hypotheses
 
 One `seed_candidate` per hypothesis. The `suspected_mechanism` string becomes the
 lane's reportable headline later, so write it as a sentence a reviewer would
@@ -82,7 +123,7 @@ understand.
 State the **orbit** explicitly. This matters more than it looks — see the
 pitfall list.
 
-### Step 3 — Run the attack orbit (blind)
+### Step 4 — Run the attack orbit (blind)
 
 Work in this order or the gates will fight you:
 
@@ -102,7 +143,7 @@ Work in this order or the gates will fight you:
 
 Then `seal_orbit(case_id, "attack", actor)`.
 
-### Step 4 — Run the defense orbit (blind)
+### Step 5 — Run the defense orbit (blind)
 
 The defense agent must **not** be handed attack output. Cut it a packet:
 
@@ -123,27 +164,27 @@ Defense does the falsification work:
 
 Then `seal_orbit(case_id, "defense", defender)`.
 
-### Step 5 — History and impact orbits
+### Step 6 — History and impact orbits
 
 History: `fingerprint_branch(...)` (structural, not prose), check duplicates and
 known fixes via `register_precedent` / `record_fix`, then seal.
 
 Impact: `derive_impact(...)` with `about_claims=[...]`, then seal.
 
-### Step 6 — Merge
+### Step 7 — Merge
 
 `merge_orbits(case_id, actor, ["attack", "defense", "history", "impact"])`
 
 The merge record preserves agreement, contradictions, differing assumptions, and
 source-version drift. Read it — it is where you find out your orbits disagreed.
 
-### Step 7 — Independent verification
+### Step 8 — Independent verification
 
 `verify_evidence(case_id, evidence_id, verifier)` where `verifier` is **not**
 the producer. This will raise `AuthorityError` if you try to self-verify. That
 is the point of the system; don't work around it.
 
-### Step 8 — Walk the gates
+### Step 9 — Walk the gates
 
 For each gate in order: `decide_gate(case_id, lane, gate, actor)`.
 
@@ -158,7 +199,7 @@ For the full working sequence, read `references/gate-reference.md` and compare
 against the demo script (`clockwork/demo.py`), which is the canonical worked
 example.
 
-### Step 9 — Kill Memory (only for dead lanes)
+### Step 10 — Kill Memory (only for dead lanes)
 
 `kill_branch(...)` needs: suspected mechanism, blocking claim, supporting
 evidence ids, invalidation conditions, and a verifier who is not the author.
@@ -170,7 +211,7 @@ evidence ids, invalidation conditions, and a verifier who is not the author.
   differently-worded or differently-committed investigation is not suppressed.
 - To reopen: `challenge_kill(..., overriding_evidence=[...])`.
 
-### Step 10 — Produce the report
+### Step 11 — Produce the report
 
 `runtime.build_report(case_id, lane, actor)` returns markdown with per-claim
 provenance. It raises `UntraceableClaim` if any substantive claim has no
@@ -206,6 +247,7 @@ Hand it to the human.
 - `references/api-reference.md` — every runtime method with its required args.
 - `references/gate-reference.md` — the 12 gates, their exact conditions, and the
   evidence that satisfies each.
+- `scripts/ensure-install` — locate or install Clockwork; run this first.
 - `scripts/clockwork-run` — thin CLI wrapper: health check, open a case, run the
   demo, tail a case's gate state. Good for smoke-testing the install.
 
@@ -213,6 +255,7 @@ Hand it to the human.
 
 Before telling the user you're done:
 
+- [ ] `ensure-install` reported installed and usable, and `clockwork-run health` passed
 - [ ] `runtime.evaluate(case_id, lane)["state"]` is `GREEN` (or you can explain
       exactly which gate is open and why)
 - [ ] `runtime.store.verify_chain(case_id)` returns verified — the log is intact

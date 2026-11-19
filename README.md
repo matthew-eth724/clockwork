@@ -237,9 +237,18 @@ the failure modes that cost real debugging time.
 
 ```bash
 # install for agents that read ~/.agents/skills
-cp -r skill ~/.agents/skills/clockwork-engineering
+mkdir -p ~/.agents/skills
+git clone --depth 1 https://github.com/matthew-eth724/clockwork.git /tmp/cw
+cp -r /tmp/cw/skill ~/.agents/skills/clockwork-engineering
+```
 
-# or point your agent at the path directly
+The skill bootstraps the runtime itself — if Clockwork is not installed,
+`skill/scripts/ensure-install` clones it, builds the venv, starts Postgres and
+boots the schema:
+
+```bash
+./scripts/ensure-install --check    # verify only
+./scripts/ensure-install --dir DIR  # install to a specific path
 ```
 
 `skill/scripts/clockwork-run` is a smoke-test CLI and resolves the repo root
