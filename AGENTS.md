@@ -1,0 +1,114 @@
+# Clockwork Engineering — agent instructions
+
+Read this before changing anything. It is the short version of what building
+this cost to learn.
+
+## What this is
+
+An evidence-gated graph runtime for vulnerability research. The append-only
+event log (`cw.case_event`) is the only source of truth. Every other table is a
+projection that must be reproducible from that log.
+
+**The governing rule:** projections are disposable, decisions must not be. If
+you change how something is computed, the same log must still yield the same
+verdict — or you have changed the truth, and that needs to be deliberate.
+
+## Setup
+
+```bash
+skill/scripts/ensure-install        # idempotent: locate or install
+skill/scripts/clockwork-run health  # postgres up, 64 shards, schema ready
+```
+
+Postgres runs in container `clockwork-pg` on port 55432. Reset with
+`skill/scripts/clockwork-run reset` (it asks for confirmation).
+
+## Running tests
+
+```bash
+PYTHONPATH=. ./.venv/bin/python -m pytest tests -q
+```
+
+Run the smallest test that proves your change. Do not re-run green checks.
+
+```bash
+PYTHONPATH=. ./.venv/bin/python -m clockwork.demo   # end-to-end, RED -> GREEN
+scripts/check-responsive                            # layout at 12 widths
+```
+
+## Traps that cost real debugging time
+
+These are not hypothetical. Each one bit during construction.
+
+**Silent projection gaps.** A `branch_nodes(branch, "branch")` returns nothing —
+the lane node has `branch_id == node_id`, so it is never "on" itself. Use
+`facts.node(branch_id)`. Similarly, evidence added with `supports=[claim]` for a
+claim that does not exist yet leaves the claim unsupported with no error.
+
+**Orbit is an activity property, not a permission.** It only governs whether
+already-sealed output may be mutated. Permissions come from capabilities
+(`produce_evidence`, `orbit:<name>`) and gate authority. Do not "fix" an
+authorization problem by relabelling an orbit.
+
+**Sealing is one-way.** After `seal_orbit`, that activity may only continue on a
+lane created (seeded) after the seal. A lane *declared* at `open_case` but
+*seeded* afterwards counts as fresh — declaration is bookkeeping, seeding is the
+act.
+
+**Blindness is structural, not cosmetic.** Other-orbit nodes must be absent from
+a context packet, not blanked. When touching `context.py`, verify with
+`pkt.withheld["blinded_orbit_nodes"]` and `pkt.visible_nodes`. A `forbidden_orbits`
+pre-filter that short-circuits before the blindness check makes it *appear* to
+work while doing nothing.
+
+**FactNode is `eq=False` deliberately.** Identical labels must not compare equal.
+Do not "tidy" that away.
+
+**Fixtures that seed before `case_opened`** are invisible to the attribute-merge
+path. If a lane is missing its `suspected_mechanism` in a report, check event
+order first.
+
+## Never do this
+
+- **Never mutate projections instead of appending events.** All writes go
+  through `Runtime`. There is no second path, and adding one breaks the audit
+  trail.
+- **Never let an actor approve its own critical evidence.** `verify_evidence`
+  enforces producer != verifier. Do not add an escape hatch, and do not register
+  a fake human to clear `final_qc`.
+- **Never auto-submit or contact a target.** The runtime refuses these by design.
+  Reports are handed to a human.
+- **Never `TRUNCATE`/`UPDATE`/`DELETE` `cw.case_event`.** Triggers block it. To
+  reset, drop the schema.
+- **Never weaken a gate predicate to make a test pass.** If a gate is hard to
+  satisfy, the fixture is incomplete, not the gate.
+
+## Conventions
+
+- Canonical JSON for anything hashed (`store.canonical_json`).
+- Any new event type must be added to `constants.EVENT_TYPES` *and* handled in
+  `projection.project()`. A type that is appended but not projected is a silent
+  hole — it is still in the log, so the chain verifies and nothing looks wrong.
+
+  **Known gaps, do not rely on these yet:** `claim_supported`,
+  `claim_contradicted`, `report_packaged`, `experiment_dispatched` and
+  `case_parked` are appended and projected by *side effect* only (or not at all).
+  `support_claim()` in particular stores no `SUPPORTS` edge and does not mark the
+  claim supported — support is carried by the `supports=[...]` argument to
+  `add_evidence()`. If you need claim status, project these events first.
+- Gate predicates live in `gates/predicates.py` as JSON, evaluated in
+  `gates/engine.py`. New leaf forms need both a handler and a `_describe` entry,
+  or the trace prints `all` and tells the reviewer nothing.
+- Tests assert *properties*, not happy paths. The useful ones prove a refusal, a
+  preserved disagreement, or a reproducible verdict.
+
+## Scope discipline
+
+The public repo is `matthew-eth724/clockwork`. Before committing, check that
+`.venv/` and `var/` are untracked — the venv is ~90MB and `var/` holds generated
+artifacts.
+
+## When you are done
+
+State what you changed, what you ran, and what you did not verify. Do not
+summarise at length or re-prove green checks.
