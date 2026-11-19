@@ -10,9 +10,13 @@ import os
 from pathlib import Path
 from typing import Any
 
+import json
+import time
+
 from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import HTMLResponse, JSONResponse, PlainTextResponse
-from fastapi.templating import Jinja2Templates
+from fastapi.responses import (HTMLResponse, JSONResponse, PlainTextResponse,
+                               StreamingResponse)
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from .constants import GATE_CHAIN, GATE_LABELS, ORBITS
@@ -20,7 +24,6 @@ from .report import UntraceableClaim
 from .runtime import AuthorityError, GateError, Runtime
 
 WEB = Path(__file__).resolve().parent.parent / "web"
-templates = Jinja2Templates(directory=str(WEB / "templates"))
 
 app = FastAPI(title="Clockwork Engineering", version="0.1.0-lite")
 rt = Runtime()
@@ -210,8 +213,14 @@ def graph(case_id: str) -> dict:
     }
 
 
-@app.get("/api/cases/{case_id}/clock")
-def clock(case_id: str) -> dict:
+def _case_snapshot(case_id: str, after: int | None = None) -> dict:
+    """Clock payload for a case.
+
+    With ``after`` set, only events with ``seq > after`` are returned, so a live
+    client can poll cheaply: an idle case costs one small response, and the
+    client merges the delta into what it already has. Branch/gate state is always
+    returned in full because it is small and recomputing it is the point.
+    """
     facts = _guard(lambda: rt.facts(case_id))
     events = rt.store.events(case_id)
     ok, why = rt.store.verify_chain(case_id)
@@ -221,13 +230,101 @@ def clock(case_id: str) -> dict:
             branches[b.node_id] = rt.evaluate(case_id, b.node_id)
         except Exception:  # noqa: BLE001 - a branch with no evidence still shows
             branches[b.node_id] = {"state": "-", "gates": {}, "next_gate": None}
-    return {"case_id": case_id, "chain_verified": ok, "chain_note": why,
+    upto = facts.upto_seq
+    if after is not None:
+        new_events = [e for e in events if e["seq"] > after]
+        payload = {
+            "case_id": case_id,
+            "changed": bool(new_events),
+            "upto_seq": upto,
             "events": [{"seq": e["seq"], "type": e["event_type"],
                         "actor": e["actor_id"], "orbit": e["orbit"],
-                        "at": e["created_at"].isoformat()} for e in events],
-            "seals": facts.seals, "merges": facts.merges,
-            "branches": branches, "gate_chain": list(GATE_CHAIN),
-            "gate_labels": GATE_LABELS}
+                        "at": e["created_at"].isoformat()} for e in new_events],
+            "branches": branches,
+            "seals": facts.seals,
+            "merges": facts.merges,
+            "chain_verified": ok,
+            "chain_note": why,
+            "gate_chain": list(GATE_CHAIN),
+            "gate_labels": GATE_LABELS,
+        }
+        return payload
+    return {
+        "case_id": case_id,
+        "changed": True,
+        "upto_seq": upto,
+        "chain_verified": ok, "chain_note": why,
+        "events": [{"seq": e["seq"], "type": e["event_type"],
+                    "actor": e["actor_id"], "orbit": e["orbit"],
+                    "at": e["created_at"].isoformat()} for e in events],
+        "seals": facts.seals, "merges": facts.merges,
+        "branches": branches, "gate_chain": list(GATE_CHAIN),
+        "gate_labels": GATE_LABELS,
+    }
+
+
+@app.get("/api/cases")
+def list_cases() -> dict:
+    rows = rt.store.q(
+        """SELECT c.case_id, c.title, c.shard_id, c.status, c.created_at,
+                  (SELECT count(*) FROM cw.case_event e
+                    WHERE e.case_id = c.case_id) AS events,
+                  (SELECT max(e.seq) FROM cw.case_event e
+                    WHERE e.case_id = c.case_id) AS upto_seq
+           FROM cw.case c
+           ORDER BY c.created_at DESC""")
+    return {"cases": [
+        {"case_id": r["case_id"], "title": r["title"], "shard": r["shard_id"],
+         "status": r["status"], "events": r["events"],
+         "upto_seq": r["upto_seq"] or 0,
+         "created_at": r["created_at"].isoformat()}
+        for r in rows]}
+
+
+@app.get("/api/cases/{case_id}/clock")
+def clock(case_id: str, after: int | None = None) -> dict:
+    return _case_snapshot(case_id, after)
+
+
+@app.get("/api/cases/{case_id}/stream")
+def stream(case_id: str, request: Request):
+    """Server-Sent Events: emit the current sequence, then on every change.
+
+    The payload is intentionally tiny ({"upto_seq": n}) — the client fetches the
+    delta itself, so a slow client never stalls the stream with a large body and
+    no state is duplicated in two transfer formats.
+    """
+
+    def gen():
+        last = -1
+        idle_ticks = 0
+        while True:
+            # Stop when the client goes away, so generators do not leak per tab.
+            if request.client is None:
+                return
+            try:
+                row = rt.store.q1(
+                    "SELECT COALESCE(max(seq), 0) AS s FROM cw.case_event "
+                    "WHERE case_id = %s", (case_id,))
+                seq = row["s"] if row else 0
+            except Exception:  # noqa: BLE001 - transient DB blip: keep the stream
+                yield "event: ping\ndata: {}\n\n"
+                time.sleep(1.0)
+                continue
+            if seq != last:
+                last = seq
+                idle_ticks = 0
+                yield f"event: seq\ndata: {json.dumps({'upto_seq': seq})}\n\n"
+            else:
+                idle_ticks += 1
+                if idle_ticks % 15 == 0:
+                    yield "event: ping\ndata: {}\n\n"
+            time.sleep(0.5)
+
+    return StreamingResponse(gen(), media_type="text/event-stream", headers={
+        "Cache-Control": "no-cache",
+        "X-Accel-Buffering": "no",
+    })
 
 
 @app.get("/api/cases/{case_id}/evaluate/{branch_id}")
@@ -322,30 +419,35 @@ def chain(case_id: str) -> dict:
 
 
 # ----------------------------------------------------------------- dashboard
+# The UI is a React SPA built from ui/ into web/app. FastAPI serves the static
+# bundle and falls back to index.html for client-side routes, so /case/<id>
+# works on a hard refresh without any server-side templating.
+APP_DIR = WEB / "app"
+
+
 @app.get("/", response_class=HTMLResponse)
-def dashboard(request: Request):
-    cases = rt.store.q(
-        """SELECT c.case_id, c.title, c.shard_id, c.status,
-                  (SELECT count(*) FROM cw.case_event e
-                    WHERE e.case_id=c.case_id) AS events
-           FROM cw.case c ORDER BY c.created_at DESC""")
-    return templates.TemplateResponse(request, "clock.html", {"cases": cases})
+def dashboard() -> HTMLResponse:
+    return _serve_app()
 
 
 @app.get("/case/{case_id}", response_class=HTMLResponse)
-def case_view(request: Request, case_id: str):
-    data = clock(case_id)
-    facts = rt.facts(case_id)
-    packets = rt.store.q(
-        """SELECT role, agent_id, node_ids, created_seq FROM cw.context_packet
-           WHERE case_id=%s ORDER BY created_seq""", (case_id,))
-    reports = rt.store.q(
-        """SELECT package_id, content_hash, qc_verdict FROM cw.report_package
-           WHERE case_id=%s ORDER BY created_seq DESC""", (case_id,))
-    return templates.TemplateResponse(request, "case.html", {
-        "case_id": case_id, "data": data, "gate_labels": GATE_LABELS,
-        "packets": packets, "reports": reports,
-        "case_nodes": sorted(facts.nodes.values(), key=lambda n: n.seq),
-        "kills": list(facts.kills.values()),
-        "edges": facts.live_edges(),
-    })
+def case_view(case_id: str) -> HTMLResponse:
+    return _serve_app()
+
+
+def _serve_app() -> HTMLResponse:
+    index = APP_DIR / "index.html"
+    if not index.exists():
+        return HTMLResponse(
+            "<h1>UI not built</h1>"
+            "<p>Run <code>cd ui &amp;&amp; npm install &amp;&amp; npm run build</code>, "
+            "or use the Vite dev server (<code>npm run dev</code>).</p>",
+            status_code=503)
+    return HTMLResponse(index.read_text())
+
+
+# Static assets built by Vite (/assets/*). Mounted after the API routes so it
+# cannot shadow them.
+if APP_DIR.exists():
+    app.mount("/assets", StaticFiles(directory=str(APP_DIR / "assets")),
+              name="assets")

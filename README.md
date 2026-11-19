@@ -261,7 +261,37 @@ skill/scripts/clockwork-run chain CW-2026-0007
 skill/scripts/clockwork-run start      # API + dashboard on :8899
 ```
 
-## Responsive dashboard
+## Dashboard (React, live)
+
+The UI is a React SPA in `ui/`, built to `web/app/` and served by FastAPI. It
+updates in real time — no refresh — by polling the append-only log
+incrementally:
+
+- the client asks for events with `seq > last_seen`
+- an idle case costs one tiny response per tick (`changed: false`)
+- a new event returns only the delta, which the client merges
+- polling pauses while the tab is hidden and catches up in one delta on return
+- `/api/cases/{id}/stream` offers a Server-Sent Events variant (`strategy: 'events'`)
+
+New event rows highlight briefly, and a passing gate flashes once, so live
+activity is visible without losing your reading position.
+
+```bash
+cd ui && npm install
+npm run dev      # http://localhost:5173, proxies /api to :8899
+npm run build    # writes web/app, served by FastAPI
+```
+
+Verify the live update in a real browser:
+
+```bash
+ui/check-live CW-2026-0007
+```
+
+It records the DOM, appends a real event server-side, and asserts the row count
+grew **without a reload** (a `window` marker survives to prove no navigation).
+
+### Responsive
 
 Both pages work from a 320px phone to a 4K desktop. Layout is verified with a
 real browser rather than by eye:
@@ -300,7 +330,8 @@ clockwork/
 tests/test_clockwork.py   26 invariant tests
 skill/                    Agent Skill: driving a case end to end
 scripts/check-responsive  real-browser layout overflow check
-web/templates/            evidence-clock dashboard
+ui/                       React SPA (Vite) + live-update browser check
+web/app/                  built UI bundle (generated, untracked)
 ```
 
 ## API surface

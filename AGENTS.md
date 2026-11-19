@@ -112,3 +112,25 @@ artifacts.
 
 State what you changed, what you ran, and what you did not verify. Do not
 summarise at length or re-prove green checks.
+
+## UI
+
+The dashboard is a React SPA in `ui/`, built with Vite to `web/app/` (generated,
+untracked) and served by FastAPI with an SPA fallback so `/case/<id>` survives a
+hard refresh. The old Jinja templates were removed; do not reintroduce a second
+rendering path.
+
+Live updates are incremental by design: the client sends `?after=<seq>` and
+receives only new events. Keep it that way — re-fetching the whole log on a timer
+would make an idle tab cost the same as an active one.
+
+```bash
+cd ui && npm install
+npm run dev              # :5173, proxies /api to :8899
+npm run build            # must be run before the FastAPI-served UI reflects changes
+ui/check-live <case_id>  # proves a live update without reload, in a browser
+```
+
+`ui/check-live` appends a real event to the case it checks. Run it against the
+demo case only after a reset, or expect the seal barrier to reject a re-run of
+`clockwork.demo` on a case that already has sealed orbits.
