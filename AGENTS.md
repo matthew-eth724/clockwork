@@ -36,6 +36,19 @@ PYTHONPATH=. ./.venv/bin/python -m clockwork.demo   # end-to-end, RED -> GREEN
 scripts/check-responsive                            # layout at 12 widths
 ```
 
+## The database may hold the user's real work
+
+`clockwork-run reset` drops the whole `cw` schema. This destroyed 22 cases
+including a live investigation once. Treat the database as precious:
+
+- **Back up before anything destructive:** `scripts/backup` (dumps and verifies).
+- **Never reset to "clean up" after a test.** Use a throwaway case id instead.
+- **The reset command now refuses** when non-demo cases exist. Do not reach for
+  `--force` to get past that guard; it is telling you something.
+- Verification restores into a throwaway container and replays the log. If you
+  change the projection, re-run `scripts/backup` and confirm old dumps still
+  verify — a projection change can break replay of historical data.
+
 ## Traps that cost real debugging time
 
 These are not hypothetical. Each one bit during construction.

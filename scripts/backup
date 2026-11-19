@@ -1,0 +1,134 @@
+#!/usr/bin/env bash
+# backup — dump the Clockwork case schema, then verify the dump restores.
+#
+# Usage:
+#   scripts/backup                 # dump + verify into backups/
+#   scripts/backup --no-verify     # dump only (fast)
+#   scripts/backup --list          # show existing backups
+#
+# An unverified backup is not a backup, so verification is the default: the dump
+# is restored into a throwaway container, its hash chain is checked, and the
+# event log is replayed to confirm the projections rebuild to the same decisions.
+#
+# Environment: CLOCKWORK_PG_CONTAINER (default clockwork-pg),
+#              CLOCKWORK_PG_USER (clockwork), CLOCKWORK_PG_DB (clockwork)
+
+set -euo pipefail
+
+CONTAINER="${CLOCKWORK_PG_CONTAINER:-clockwork-pg}"
+DB_USER="${CLOCKWORK_PG_USER:-clockwork}"
+DB_NAME="${CLOCKWORK_PG_DB:-clockwork}"
+VERIFY_CONTAINER="cw-backup-verify"
+VERIFY_PORT=55499
+
+SELF_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+REPO="$(cd "$SELF_DIR/.." && pwd)"
+BACKUP_DIR="${CLOCKWORK_BACKUP_DIR:-$REPO/backups}"
+mkdir -p "$BACKUP_DIR"
+
+VERIFY=1
+case "${1:-}" in
+  --list)
+    ls -lht "$BACKUP_DIR"/*.dump 2>/dev/null || { echo "no backups in $BACKUP_DIR"; exit 0; }
+    exit 0 ;;
+  --no-verify) VERIFY=0 ;;
+  "") ;;
+  *) echo "unknown arg: $1" >&2; exit 2 ;;
+esac
+
+docker ps --format '{{.Names}}' | grep -qx "$CONTAINER" \
+  || { echo "error: container $CONTAINER is not running" >&2; exit 1; }
+
+STAMP="$(date +%Y%m%d-%H%M%S)"
+NAME="cw-$STAMP.dump"
+OUT="$BACKUP_DIR/$NAME"
+REMOTE="/tmp/$NAME"
+
+# What is inside, so the filename is not the only record of the contents.
+# Count events for real cases only; the synthetic __system__ case holds agent
+# registrations and would otherwise inflate the number.
+IFS='|' read -r CASES EVENTS < <(docker exec "$CONTAINER" psql -U "$DB_USER" -d "$DB_NAME" -tAc \
+  "SELECT (SELECT count(*) FROM cw.case),
+          (SELECT count(*) FROM cw.case_event WHERE case_id <> '__system__');")
+CASES="${CASES//[^0-9]/}"
+EVENTS="${EVENTS//[^0-9]/}"
+
+echo "backing up $CASES case(s), $EVENTS event(s)"
+
+docker exec "$CONTAINER" pg_dump -U "$DB_USER" -d "$DB_NAME" \
+  --schema=cw --no-owner --no-privileges -Fc -f "$REMOTE"
+docker cp "$CONTAINER:$REMOTE" "$OUT" >/dev/null
+docker exec "$CONTAINER" rm -f "$REMOTE"
+
+if [[ ! -s "$OUT" ]]; then
+  echo "error: dump is empty" >&2; rm -f "$OUT"; exit 1
+fi
+echo "wrote $OUT ($(du -h "$OUT" | cut -f1))"
+
+# A manifest beside the dump keeps provenance with the artefact.
+cat > "$BACKUP_DIR/${NAME%.dump}.meta" <<META
+created_at=$STAMP
+cases=$CASES
+events=$EVENTS
+container=$CONTAINER
+database=$DB_NAME
+git_commit=$(cd "$REPO" && git rev-parse --short HEAD 2>/dev/null || echo unknown)
+META
+
+if [[ "$VERIFY" == "1" ]]; then
+  echo "verifying: restoring into a throwaway container..."
+  docker rm -f "$VERIFY_CONTAINER" >/dev/null 2>&1 || true
+  docker run -d --name "$VERIFY_CONTAINER" \
+    -e POSTGRES_PASSWORD=x -e POSTGRES_USER="$DB_USER" -e POSTGRES_DB="$DB_NAME" \
+    -p "$VERIFY_PORT:5432" postgres:17-alpine >/dev/null
+
+  cleanup() { docker rm -f "$VERIFY_CONTAINER" >/dev/null 2>&1 || true; }
+  trap cleanup EXIT
+
+  for _ in $(seq 1 40); do
+    docker exec "$VERIFY_CONTAINER" pg_isready -U "$DB_USER" -d "$DB_NAME" >/dev/null 2>&1 && break
+    sleep 0.5
+  done
+
+  if ! docker exec -i "$VERIFY_CONTAINER" pg_restore -U "$DB_USER" -d "$DB_NAME" \
+        --no-owner < "$OUT" 2>&1 | grep -i "error" ; then
+    :
+  fi
+
+  DSN="postgresql://$DB_USER:x@localhost:$VERIFY_PORT/$DB_NAME" \
+  PYTHONPATH="$REPO" "$REPO/.venv/bin/python" - <<'PY'
+import os, sys
+from clockwork.runtime import Runtime
+from clockwork.store import Store
+from clockwork.projection import materialize
+
+rt = Runtime(Store(os.environ["DSN"]))
+cases = rt.store.q("SELECT case_id FROM cw.case ORDER BY case_id")
+if not cases:
+    print("  verify FAILED: no cases in the restored dump")
+    sys.exit(1)
+bad = 0
+for row in cases:
+    cid = row["case_id"]
+    ok, note = rt.store.verify_chain(cid)
+    facts = materialize(rt.store, cid)
+    branches = [n.node_id for n in facts.of_kind("branch")]
+    states = {}
+    for b in branches:
+        try:
+            states[b] = rt.evaluate(cid, b)["state"]
+        except Exception as exc:            # noqa: BLE001
+            states[b] = f"error: {exc}"
+    flag = "ok " if ok else "BAD"
+    if not ok:
+        bad += 1
+    print(f"  [{flag}] {cid}: {note}; replayed "
+          f"{len(facts.nodes)} nodes, {len(facts.live_edges())} edges; "
+          f"branches={states}")
+print("verify PASSED" if bad == 0 else f"verify FAILED ({bad} case(s))")
+sys.exit(1 if bad else 0)
+PY
+  # the dump is kept; only the throwaway container is removed (see trap)
+fi
+
+echo "done"

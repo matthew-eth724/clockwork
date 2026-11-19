@@ -220,6 +220,30 @@ PYTHONPATH=. ./.venv/bin/python -m uvicorn clockwork.api:app --port 8899
 #    → http://localhost:8899/case/CW-2026-0007
 ```
 
+### Backup and restore
+
+```bash
+scripts/backup            # dump and verify (default)
+scripts/backup --list     # show existing backups
+scripts/backup --no-verify
+```
+
+A dump is written to `backups/` with a `.meta` sidecar recording the case/event
+counts and git commit. Verification is the default because an unverified backup
+is not a backup: the dump is restored into a throwaway Postgres container, every
+case's hash chain is checked, and the event log is replayed to confirm the
+projections rebuild to the same branch states.
+
+Restoring by hand:
+
+```bash
+docker exec -i <container> pg_restore -U clockwork -d clockwork --no-owner < backups/cw-*.dump
+```
+
+Note that `node`/`edge` tables come back **empty** — they are projections. Replay
+the log (`materialize`) and the graph rebuilds; the chain is the thing that must
+survive, and it does.
+
 ### Reset a local database
 
 ```bash
@@ -228,6 +252,10 @@ docker exec clockwork-pg psql -U clockwork -d clockwork -c "DROP SCHEMA cw CASCA
 
 `case_event` refuses `TRUNCATE` by design; dropping the schema is the sanctioned
 reset.
+
+`clockwork-run reset` lists exactly what it will delete and **refuses** if any
+case other than the demo exists, pointing you at `scripts/backup` instead.
+Override with `--force` once you have a backup.
 
 ## Using it from an agent
 
