@@ -22,7 +22,8 @@ import urllib.request
 import websocket
 
 CASE = sys.argv[1] if len(sys.argv) > 1 else "CW-2026-0007"
-URL = f"http://localhost:8899/case/{CASE}"
+BASE = os.environ.get("CLOCKWORK_UI_BASE", "http://localhost:8899").rstrip("/")
+URL = f"{BASE}/case/{CASE}"
 PORT = 9223
 
 
