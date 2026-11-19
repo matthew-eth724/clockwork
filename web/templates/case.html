@@ -1,0 +1,203 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>{{ case_id }} — evidence clock</title>
+<style>
+  :root {
+    --bg:#0b0d10; --panel:#12161b; --line:#242b33; --fg:#dbe3ea; --dim:#7d8b99;
+    --red:#ff5c5c; --yellow:#f5c451; --green:#3ddc84; --stale:#8b6cff;
+    --attack:#ff6b6b; --defense:#4dabf7; --history:#e0b341; --impact:#63e6be;
+  }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:13px/1.55 ui-monospace,"SF Mono",Menlo,monospace; }
+  header { padding:16px 24px; border-bottom:1px solid var(--line);
+           display:flex; gap:14px; align-items:baseline; flex-wrap:wrap; }
+  h1 { font-size:15px; margin:0; letter-spacing:.14em; }
+  a { color:var(--defense); text-decoration:none; }
+  main { padding:20px 24px; display:grid; grid-template-columns:repeat(12,1fr);
+         gap:14px; max-width:1500px; }
+  .card { background:var(--panel); border:1px solid var(--line);
+          border-radius:10px; padding:14px; }
+  .card h2 { font-size:11px; letter-spacing:.14em; text-transform:uppercase;
+             color:var(--dim); margin:0 0 10px; font-weight:400; }
+  .s12 { grid-column:span 12 } .s8 { grid-column:span 8 }
+  .s6 { grid-column:span 6 } .s4 { grid-column:span 4 }
+  .pill { padding:1px 8px; border-radius:999px; font-size:11px;
+          border:1px solid var(--line); }
+  .RED{color:var(--red);border-color:var(--red)}
+  .YELLOW{color:var(--yellow);border-color:var(--yellow)}
+  .GREEN{color:var(--green);border-color:var(--green)}
+  .STALE{color:var(--stale);border-color:var(--stale)}
+  table { width:100%; border-collapse:collapse; font-size:12px; }
+  th,td { text-align:left; padding:5px 8px; border-bottom:1px solid #1b2128; }
+  th { color:var(--dim); font-weight:400; font-size:11px; text-transform:uppercase;
+       letter-spacing:.08em; }
+  .rail { display:grid; grid-template-columns:repeat(4,1fr); gap:6px 18px; }
+  .gate { display:flex; gap:8px; align-items:center; font-size:12px; }
+  .dot { width:9px; height:9px; border-radius:50%; background:#39434d; flex:none; }
+  .dot.PASSED{background:var(--green);box-shadow:0 0 7px var(--green)}
+  .dot.FAILED{background:var(--red);box-shadow:0 0 7px var(--red)}
+  .clock { max-height:560px; overflow-y:auto; }
+  .ev { display:grid; grid-template-columns:44px 1fr 118px 26px; gap:8px;
+        padding:4px 0 4px 8px; font-size:11.5px; color:#c3ccd5; }
+  .ev .seq { color:#5c6773; }
+  .ev .actor { color:var(--dim); text-align:right; }
+  .ev .tick { color:#39434d; }
+  .o-attack{border-left:2px solid var(--attack)}
+  .o-defense{border-left:2px solid var(--defense)}
+  .o-history{border-left:2px solid var(--history)}
+  .o-impact{border-left:2px solid var(--impact)}
+  .o-system{border-left:2px solid #39434d}
+  .sealrow { display:flex; justify-content:space-between; font-size:11.5px;
+             padding:4px 0; border-bottom:1px dashed #1b2128; }
+  .kill { border:1px solid #3a2b2b; border-radius:8px; padding:10px;
+          margin-bottom:8px; font-size:11.5px; }
+  .kill .m { color:var(--yellow); }
+  .muted { color:var(--dim); }
+  code { background:#0e1216; padding:1px 4px; border-radius:3px; color:#a9c1d9; }
+  .kinds span { margin-right:8px; font-size:11px; color:var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <a href="/">← cases</a>
+  <h1>{{ case_id }}</h1>
+  <span class="pill {{ 'GREEN' if data.chain_verified else 'RED' }}">
+    chain {{ 'verified' if data.chain_verified else 'BROKEN' }} · {{ data.chain_note }}
+  </span>
+  <span class="muted">{{ data.events|length }} events</span>
+</header>
+
+<main>
+  <div class="card s8">
+    <h2>Evidence clock — append-only case events</h2>
+    <div class="clock">
+      {% for e in data.events %}
+      <div class="ev o-{{ e.orbit }}">
+        <span class="seq">#{{ e.seq }}</span>
+        <span>{{ e.type }}</span>
+        <span class="actor">{{ e.actor }}</span>
+        <span class="tick">{{ '◆' if e.type.startswith('orbit_sealed') else ('✦' if e.type.startswith('gate_') else '') }}</span>
+      </div>
+      {% endfor %}
+    </div>
+  </div>
+
+  <div class="card s4">
+    <h2>Orbit seals</h2>
+    {% for orbit in ['attack','defense','history','impact'] %}
+      {% set s = data.seals.get(orbit) %}
+      <div class="sealrow">
+        <span class="o-{{ orbit }}" style="border:0">{{ orbit }}</span>
+        {% if s %}
+          <span><b>sealed</b> @seq {{ s.sealed_seq }} · {{ s.node_ids|length }} nodes
+            · <code>{{ s.seal_hash[7:19] }}…</code></span>
+        {% else %}
+          <span class="muted">unsealed</span>
+        {% endif %}
+      </div>
+    {% endfor %}
+    <h2 style="margin-top:16px">Merges</h2>
+    {% for m in data.merges %}
+      <div class="sealrow">
+        <span>{{ m.orbit }}</span>
+        <span class="muted">seq {{ m.seq }} ·
+          {{ m.resolution.agreement|length }} agree ·
+          {{ m.resolution.contradictions|length }} contradict ·
+          {{ m.resolution.differing_assumptions|length }} differing assumptions ·
+          {{ m.resolution.source_version_drift|length }} version drift</span>
+      </div>
+    {% else %}
+      <div class="muted">no merges yet</div>
+    {% endfor %}
+  </div>
+
+  {% for branch_id, ev in data.branches.items() %}
+  <div class="card s6">
+    <h2>Branch {{ branch_id }} — proof state
+      <span class="pill {{ ev.state }}">{{ ev.state }}</span></h2>
+    <div class="muted" style="margin-bottom:8px">
+      next gate: <code>{{ ev.next_gate or 'complete' }}</code>
+    </div>
+    <div class="rail">
+      {% for g in data.gate_chain %}
+        {% set st = ev.gates.get(g, {}).get('state', 'PENDING') %}
+        <div class="gate"><span class="dot {{ st }}"></span>
+          <span>{{ gate_labels[g] }}</span></div>
+      {% endfor %}
+    </div>
+  </div>
+  {% endfor %}
+
+  <div class="card s6">
+    <h2>Kill memory — conditional negative precedent</h2>
+    {% for k in kills %}
+      <div class="kill">
+        <div class="m">{{ k.suspected_mechanism }}</div>
+        <div class="muted">blocked by claim <code>{{ k.blocking_claim_id }}</code>
+          · evidence {{ k.evidence_ids }}</div>
+        <div class="muted">repo {{ k.repo_id }} · range {{ k.commit_range }}</div>
+        <div class="muted">author {{ k.author_id }} · verifier {{ k.verifier_id }}</div>
+        <div style="margin-top:6px">Invalidated if:</div>
+        <ul style="margin:2px 0 0 16px; padding:0">
+          {% for c in k.invalidation_conditions %}<li>{{ c }}</li>{% endfor %}
+        </ul>
+        {% if k.invalidated_by %}
+          <div style="color:var(--green);margin-top:6px">
+            reopened with evidence: {{ k.invalidated_by }}
+          </div>
+        {% endif %}
+      </div>
+    {% else %}
+      <div class="muted">no kills recorded</div>
+    {% endfor %}
+  </div>
+
+  <div class="card s6">
+    <h2>Role context packets — minimum connected subgraphs</h2>
+    <table>
+      <tr><th>role</th><th>agent</th><th>nodes</th><th>seq</th></tr>
+      {% for p in packets %}
+      <tr><td>{{ p.role }}</td><td>{{ p.agent_id }}</td>
+          <td>{{ p.node_ids|length }}</td><td>{{ p.created_seq }}</td></tr>
+      {% else %}
+      <tr><td colspan="4" class="muted">none cut yet</td></tr>
+      {% endfor %}
+    </table>
+    <h2 style="margin-top:14px">Report packages</h2>
+    <table>
+      <tr><th>package</th><th>hash</th><th>auto-submit</th></tr>
+      {% for r in reports %}
+      <tr><td>{{ r.package_id }}</td>
+          <td><code>{{ r.content_hash[7:23] }}…</code></td>
+          <td class="muted">{{ r.qc_verdict.get('auto_submit') }}</td></tr>
+      {% else %}
+      <tr><td colspan="3" class="muted">none</td></tr>
+      {% endfor %}
+    </table>
+  </div>
+
+  <div class="card s12">
+    <h2>Epistemic graph ({{ case_nodes|length }} nodes · {{ edges|length }} live edges)</h2>
+    <div class="kinds">
+      {% for kind in ['claim','evidence','experiment','control','assumption','impact','fingerprint','artifact','commit','scope_snapshot','precedent','branch'] %}
+        <span>{{ kind }}: {{ case_nodes|selectattr('kind','equalto',kind)|list|length }}</span>
+      {% endfor %}
+    </div>
+    <table style="margin-top:8px">
+      <tr><th>seq</th><th>kind</th><th>orbit</th><th>node</th><th>label</th></tr>
+      {% for n in case_nodes[-40:] %}
+      <tr>
+        <td class="muted">{{ n.seq }}</td><td>{{ n.kind }}</td>
+        <td class="o-{{ n.orbit }}" style="border-left-width:2px">{{ n.orbit }}</td>
+        <td><code>{{ n.node_id }}</code></td>
+        <td>{{ n.label[:110] }}</td>
+      </tr>
+      {% endfor %}
+    </table>
+  </div>
+</main>
+</body>
+</html>

@@ -1,0 +1,93 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>Clockwork Engineering — evidence clock</title>
+<style>
+  :root {
+    --bg:#0b0d10; --panel:#12161b; --line:#242b33; --fg:#dbe3ea; --dim:#7d8b99;
+    --red:#ff5c5c; --yellow:#f5c451; --green:#3ddc84; --stale:#8b6cff;
+    --attack:#ff6b6b; --defense:#4dabf7; --history:#e0b341; --impact:#63e6be;
+  }
+  * { box-sizing: border-box; }
+  body { margin:0; background:var(--bg); color:var(--fg);
+         font:14px/1.5 ui-monospace, "SF Mono", Menlo, monospace; }
+  header { padding:18px 24px; border-bottom:1px solid var(--line);
+           display:flex; gap:16px; align-items:baseline; }
+  h1 { font-size:16px; margin:0; letter-spacing:.18em; text-transform:uppercase; }
+  .tag { color:var(--dim); font-size:12px; }
+  main { padding:24px; max-width:1400px; }
+  a { color:var(--defense); text-decoration:none; }
+  table { width:100%; border-collapse:collapse; }
+  th, td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
+  th { color:var(--dim); font-weight:400; font-size:12px;
+       letter-spacing:.08em; text-transform:uppercase; }
+  .pill { padding:2px 8px; border-radius:999px; font-size:11px;
+          border:1px solid var(--line); }
+  .RED { color:var(--red); border-color:var(--red); }
+  .YELLOW { color:var(--yellow); border-color:var(--yellow); }
+  .GREEN { color:var(--green); border-color:var(--green); }
+  .STALE { color:var(--stale); border-color:var(--stale); }
+  .grid { display:grid; grid-template-columns:repeat(12, 1fr); gap:16px; }
+  .card { background:var(--panel); border:1px solid var(--line);
+          border-radius:10px; padding:16px; }
+  .card h2 { font-size:12px; letter-spacing:.14em; text-transform:uppercase;
+             color:var(--dim); margin:0 0 12px; font-weight:400; }
+  .span-4 { grid-column: span 4; } .span-8 { grid-column: span 8; }
+  .span-6 { grid-column: span 6; } .span-12 { grid-column: span 12; }
+  /* gate rail */
+  .rail { display:flex; flex-direction:column; gap:6px; }
+  .gate { display:flex; align-items:center; gap:10px; font-size:13px; }
+  .dot { width:10px; height:10px; border-radius:50%; background:#39434d; }
+  .dot.PASSED { background:var(--green); box-shadow:0 0 8px var(--green); }
+  .dot.FAILED { background:var(--red); }
+  .dot.PENDING { background:#39434d; }
+  /* event clock */
+  .clock { max-height:520px; overflow-y:auto; }
+  .ev { display:grid; grid-template-columns:56px 1fr 130px; gap:10px;
+        padding:5px 0; border-bottom:1px dashed #1b2128; font-size:12px; }
+  .ev .seq { color:var(--dim); }
+  .ev .type { color:var(--fg); }
+  .ev .actor { color:var(--dim); text-align:right; }
+  .orbit-attack { border-left:2px solid var(--attack); padding-left:8px; }
+  .orbit-defense { border-left:2px solid var(--defense); padding-left:8px; }
+  .orbit-history { border-left:2px solid var(--history); padding-left:8px; }
+  .orbit-impact { border-left:2px solid var(--impact); padding-left:8px; }
+  .orbit-system { border-left:2px solid #39434d; padding-left:8px; }
+  .seal { font-size:11px; color:var(--dim); }
+  .seal b { color:var(--stale); }
+  .kill { border:1px solid #3a2b2b; border-radius:8px; padding:10px;
+          margin-bottom:10px; font-size:12px; }
+  .kill .m { color:var(--yellow); }
+  .muted { color:var(--dim); }
+  code { background:#0e1216; padding:1px 5px; border-radius:4px;
+         font-size:12px; color:#a9c1d9; }
+  .legend { display:flex; gap:12px; font-size:11px; color:var(--dim); }
+</style>
+</head>
+<body>
+<header>
+  <h1>Clockwork Engineering</h1>
+  <span class="tag">evidence-gated graph runtime · lite · 64 shards · 12 gates</span>
+  <span class="tag" style="margin-left:auto">the investigation is the graph</span>
+</header>
+<main>
+  <div class="card span-12">
+    <h2>Cases</h2>
+    <table>
+      <tr><th>case</th><th>title</th><th>shard</th><th>status</th><th>events</th><th></th></tr>
+      {% for c in cases %}
+      <tr>
+        <td>{{ c.case_id }}</td><td>{{ c.title }}</td>
+        <td>{{ c.shard_id }}</td><td>{{ c.status }}</td>
+        <td>{{ c.events }}</td>
+        <td><a href="/case/{{ c.case_id }}">open clock →</a></td>
+      </tr>
+      {% else %}
+      <tr><td colspan="6" class="muted">No cases yet — run <code>python -m clockwork.demo</code></td></tr>
+      {% endfor %}
+    </table>
+  </div>
+</main>
+</body>
+</html>

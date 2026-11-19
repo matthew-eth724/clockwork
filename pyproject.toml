@@ -1,0 +1,29 @@
+[project]
+name = "clockwork-engineering"
+version = "0.1.0"
+description = "Evidence-gated, graph-native runtime for multi-agent vulnerability research (Lite)"
+requires-python = ">=3.11"
+dependencies = [
+  "psycopg[binary]>=3.1",
+  "fastapi>=0.110",
+  "uvicorn[standard]>=0.27",
+  "jinja2>=3.1",
+  "pydantic>=2",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8", "httpx>=0.27"]
+
+[project.scripts]
+clockwork-demo = "clockwork.demo:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+include = ["clockwork*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]
