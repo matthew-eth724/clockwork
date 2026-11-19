@@ -1,0 +1,13 @@
+[Unit]
+Description=Hourly Clockwork database backup
+
+[Timer]
+OnCalendar=hourly
+# Spread load slightly so it never lands exactly on the polling tick.
+RandomizedDelaySec=300
+# If the machine was asleep, run once on wake rather than replaying every missed
+# hour back to back.
+Persistent=true
+
+[Install]
+WantedBy=timers.target

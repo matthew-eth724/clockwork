@@ -27,17 +27,35 @@ BACKUP_DIR="${CLOCKWORK_BACKUP_DIR:-$REPO/backups}"
 mkdir -p "$BACKUP_DIR"
 
 VERIFY=1
+KEEP="${CLOCKWORK_BACKUP_KEEP:-48}"
 case "${1:-}" in
   --list)
     ls -lht "$BACKUP_DIR"/*.dump 2>/dev/null || { echo "no backups in $BACKUP_DIR"; exit 0; }
     exit 0 ;;
   --no-verify) VERIFY=0 ;;
+  --keep)
+    shift; [[ "${1:-}" =~ ^[0-9]+$ ]] || { echo "--keep needs a number" >&2; exit 2; }
+    KEEP="$1" ;;
+  --gc)
+    # prune only, then exit
+    python3 - "$BACKUP_DIR" "$KEEP" <<'GC'
+import sys, pathlib
+d, keep = pathlib.Path(sys.argv[1]), int(sys.argv[2])
+dumps = sorted(d.glob("*.dump"), key=lambda p: p.stat().st_mtime, reverse=True)
+for old in dumps[keep:]:
+    old.unlink(missing_ok=True)
+    old.with_suffix(".meta").unlink(missing_ok=True)
+print(f"kept {min(len(dumps), keep)}, removed {max(0, len(dumps) - keep)}")
+GC
+    exit 0 ;;
   "") ;;
   *) echo "unknown arg: $1" >&2; exit 2 ;;
 esac
 
-docker ps --format '{{.Names}}' | grep -qx "$CONTAINER" \
-  || { echo "error: container $CONTAINER is not running" >&2; exit 1; }
+if ! docker ps --format '{{.Names}}' | grep -qx "$CONTAINER"; then
+  echo "error: container $CONTAINER is not running — backup NOT taken" >&2
+  exit 1
+fi
 
 STAMP="$(date +%Y%m%d-%H%M%S)"
 NAME="cw-$STAMP.dump"
@@ -53,6 +71,10 @@ IFS='|' read -r CASES EVENTS < <(docker exec "$CONTAINER" psql -U "$DB_USER" -d 
 CASES="${CASES//[^0-9]/}"
 EVENTS="${EVENTS//[^0-9]/}"
 
+if [[ "$CASES" -eq 0 ]]; then
+  echo "error: database has 0 cases — refusing to record an empty backup" >&2
+  exit 1
+fi
 echo "backing up $CASES case(s), $EVENTS event(s)"
 
 docker exec "$CONTAINER" pg_dump -U "$DB_USER" -d "$DB_NAME" \
@@ -90,9 +112,12 @@ if [[ "$VERIFY" == "1" ]]; then
     sleep 0.5
   done
 
-  if ! docker exec -i "$VERIFY_CONTAINER" pg_restore -U "$DB_USER" -d "$DB_NAME" \
-        --no-owner < "$OUT" 2>&1 | grep -i "error" ; then
-    :
+  RESTORE_LOG="$(docker exec -i "$VERIFY_CONTAINER" pg_restore -U "$DB_USER" \
+      -d "$DB_NAME" --no-owner < "$OUT" 2>&1 || true)"
+  if printf '%s' "$RESTORE_LOG" | grep -qi "error:"; then
+    printf '%s\n' "$RESTORE_LOG" | head -5
+    echo "error: pg_restore failed" >&2
+    exit 1
   fi
 
   DSN="postgresql://$DB_USER:x@localhost:$VERIFY_PORT/$DB_NAME" \
@@ -129,6 +154,21 @@ print("verify PASSED" if bad == 0 else f"verify FAILED ({bad} case(s))")
 sys.exit(1 if bad else 0)
 PY
   # the dump is kept; only the throwaway container is removed (see trap)
+fi
+
+# Retention: keep the newest $KEEP dumps. Unbounded accumulation is its own
+# outage — a full disk breaks Postgres, not just the backup task.
+COUNT_NOW="$(ls -1 "$BACKUP_DIR"/*.dump 2>/dev/null | wc -l)"
+if [[ "$COUNT_NOW" -gt "$KEEP" ]]; then
+  python3 - "$BACKUP_DIR" "$KEEP" <<'GC'
+import sys, pathlib
+d, keep = pathlib.Path(sys.argv[1]), int(sys.argv[2])
+dumps = sorted(d.glob("*.dump"), key=lambda p: p.stat().st_mtime, reverse=True)
+for old in dumps[keep:]:
+    old.unlink(missing_ok=True)
+    old.with_suffix(".meta").unlink(missing_ok=True)
+print(f"pruned {len(dumps) - keep} old backup(s), keeping {keep}")
+GC
 fi
 
 echo "done"

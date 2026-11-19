@@ -223,10 +223,16 @@ PYTHONPATH=. ./.venv/bin/python -m uvicorn clockwork.api:app --port 8899
 ### Backup and restore
 
 ```bash
-scripts/backup            # dump and verify (default)
-scripts/backup --list     # show existing backups
-scripts/backup --no-verify
+scripts/backup              # dump and verify (default)
+scripts/backup --list       # show existing backups
+scripts/backup --keep 12    # retention: newest 12 dumps
+scripts/backup --gc         # prune only
+scripts/backup --no-verify  # skip the restore check (not recommended)
 ```
+
+It exits non-zero when anything is wrong: container down, empty database,
+failed restore, or a chain that does not verify. A backup that "succeeds"
+silently is worse than no backup.
 
 A dump is written to `backups/` with a `.meta` sidecar recording the case/event
 counts and git commit. Verification is the default because an unverified backup
@@ -243,6 +249,29 @@ docker exec -i <container> pg_restore -U clockwork -d clockwork --no-owner < bac
 Note that `node`/`edge` tables come back **empty** — they are projections. Replay
 the log (`materialize`) and the graph rebuilds; the chain is the thing that must
 survive, and it does.
+
+### Scheduled backups
+
+```bash
+cp skill/systemd/clockwork-backup.{service,timer} ~/.config/systemd/user/
+systemctl --user daemon-reload
+systemctl --user enable --now clockwork-backup.timer
+systemctl --user list-timers clockwork-backup.timer   # next fire time
+journalctl --user -u clockwork-backup.service -n 20   # what happened
+```
+
+Hourly, with `RandomizedDelaySec=300` and `Persistent=true` so a slept machine
+runs once on wake rather than replaying every missed hour. Retention keeps the
+newest 48 dumps; tune with `CLOCKWORK_BACKUP_KEEP`.
+
+Backups live in `backups/` on the same disk as the database. That protects
+against mistakes — a bad migration, a wrong reset — but **not** against disk
+failure or theft. Copy `backups/` somewhere else periodically if the data
+matters.
+
+A failed run marks the unit failed, so `systemctl --user list-timers` and the
+journal show it. There is no email or notification; if you want alerting, that is
+the thing to add next.
 
 ### Reset a local database
 
