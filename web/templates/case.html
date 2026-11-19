@@ -2,6 +2,8 @@
 <html lang="en">
 <head>
 <meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
 <title>{{ case_id }} — evidence clock</title>
 <style>
   :root {
@@ -10,16 +12,20 @@
     --attack:#ff6b6b; --defense:#4dabf7; --history:#e0b341; --impact:#63e6be;
   }
   * { box-sizing:border-box; }
+  html { -webkit-text-size-adjust:100%; }
   body { margin:0; background:var(--bg); color:var(--fg);
-         font:13px/1.55 ui-monospace,"SF Mono",Menlo,monospace; }
+         font:13px/1.55 ui-monospace,"SF Mono",Menlo,monospace;
+         overflow-wrap:anywhere; }
   header { padding:16px 24px; border-bottom:1px solid var(--line);
            display:flex; gap:14px; align-items:baseline; flex-wrap:wrap; }
   h1 { font-size:15px; margin:0; letter-spacing:.14em; }
   a { color:var(--defense); text-decoration:none; }
   main { padding:20px 24px; display:grid; grid-template-columns:repeat(12,1fr);
-         gap:14px; max-width:1500px; }
+         gap:14px; max-width:1500px; margin:0 auto; }
   .card { background:var(--panel); border:1px solid var(--line);
-          border-radius:10px; padding:14px; }
+          border-radius:10px; padding:14px; min-width:0; }
+  /* wide tables scroll inside their card instead of breaking the page */
+  .scroller { width:100%; overflow-x:auto; -webkit-overflow-scrolling:touch; }
   .card h2 { font-size:11px; letter-spacing:.14em; text-transform:uppercase;
              color:var(--dim); margin:0 0 10px; font-weight:400; }
   .s12 { grid-column:span 12 } .s8 { grid-column:span 8 }
@@ -30,10 +36,11 @@
   .YELLOW{color:var(--yellow);border-color:var(--yellow)}
   .GREEN{color:var(--green);border-color:var(--green)}
   .STALE{color:var(--stale);border-color:var(--stale)}
-  table { width:100%; border-collapse:collapse; font-size:12px; }
+  table { width:100%; border-collapse:collapse; font-size:12px; min-width:520px; }
   th,td { text-align:left; padding:5px 8px; border-bottom:1px solid #1b2128; }
   th { color:var(--dim); font-weight:400; font-size:11px; text-transform:uppercase;
-       letter-spacing:.08em; }
+       letter-spacing:.08em; white-space:nowrap; }
+  td { vertical-align:top; }
   .rail { display:grid; grid-template-columns:repeat(4,1fr); gap:6px 18px; }
   .gate { display:flex; gap:8px; align-items:center; font-size:12px; }
   .dot { width:9px; height:9px; border-radius:50%; background:#39434d; flex:none; }
@@ -58,6 +65,48 @@
   .muted { color:var(--dim); }
   code { background:#0e1216; padding:1px 4px; border-radius:3px; color:#a9c1d9; }
   .kinds span { margin-right:8px; font-size:11px; color:var(--dim); }
+
+  /* ---------- responsive breakpoints ---------- */
+
+  /* tablet / small laptop: two-up cards become full width, gate rail 2 columns */
+  @media (max-width: 1024px) {
+    .s8, .s4 { grid-column: span 12; }
+    .rail { grid-template-columns:repeat(2,1fr); }
+  }
+
+  /* phone landscape / narrow tablet */
+  @media (max-width: 760px) {
+    main { padding:14px 16px; gap:12px; }
+    .s6 { grid-column: span 12; }
+    header { gap:8px 14px; }
+    /* event rows: actor drops under the type instead of squeezing */
+    .ev { grid-template-columns:40px 1fr 22px; grid-template-areas:
+            "seq type tick" ".  actor actor"; }
+    .ev .seq { grid-area:seq } .ev .type { grid-area:type }
+    .ev .tick { grid-area:tick } .ev .actor { grid-area:actor; text-align:left; }
+    .sealrow { flex-wrap:wrap; gap:2px 8px; }
+  }
+
+  /* phone portrait */
+  @media (max-width: 480px) {
+    main { padding:10px 12px; gap:10px; }
+    body { font-size:12.5px; }
+    header { padding:12px; }
+    h1 { font-size:13px; letter-spacing:.08em; }
+    .card { padding:11px; border-radius:8px; }
+    .card h2 { font-size:11px; }
+    .rail { grid-template-columns:1fr; }
+    .clock { max-height:55vh; }
+    .ev { font-size:11px; }
+    .kill { font-size:11px; }
+    code { font-size:11px; }
+    table { min-width:460px; }
+    th, td { padding:6px 8px; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    * { animation:none !important; transition:none !important; }
+  }
 </style>
 </head>
 <body>
@@ -157,7 +206,7 @@
 
   <div class="card s6">
     <h2>Role context packets — minimum connected subgraphs</h2>
-    <table>
+    <div class="scroller"><table>
       <tr><th>role</th><th>agent</th><th>nodes</th><th>seq</th></tr>
       {% for p in packets %}
       <tr><td>{{ p.role }}</td><td>{{ p.agent_id }}</td>
@@ -165,9 +214,9 @@
       {% else %}
       <tr><td colspan="4" class="muted">none cut yet</td></tr>
       {% endfor %}
-    </table>
+    </table></div>
     <h2 style="margin-top:14px">Report packages</h2>
-    <table>
+    <div class="scroller"><table>
       <tr><th>package</th><th>hash</th><th>auto-submit</th></tr>
       {% for r in reports %}
       <tr><td>{{ r.package_id }}</td>
@@ -176,7 +225,7 @@
       {% else %}
       <tr><td colspan="3" class="muted">none</td></tr>
       {% endfor %}
-    </table>
+    </table></div>
   </div>
 
   <div class="card s12">
@@ -186,7 +235,7 @@
         <span>{{ kind }}: {{ case_nodes|selectattr('kind','equalto',kind)|list|length }}</span>
       {% endfor %}
     </div>
-    <table style="margin-top:8px">
+    <div class="scroller"><table style="margin-top:8px">
       <tr><th>seq</th><th>kind</th><th>orbit</th><th>node</th><th>label</th></tr>
       {% for n in case_nodes[-40:] %}
       <tr>
@@ -196,7 +245,7 @@
         <td>{{ n.label[:110] }}</td>
       </tr>
       {% endfor %}
-    </table>
+    </table></div>
   </div>
 </main>
 </body>

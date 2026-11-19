@@ -261,6 +261,22 @@ skill/scripts/clockwork-run chain CW-2026-0007
 skill/scripts/clockwork-run start      # API + dashboard on :8899
 ```
 
+## Responsive dashboard
+
+Both pages work from a 320px phone to a 4K desktop. Layout is verified with a
+real browser rather than by eye:
+
+```bash
+scripts/check-responsive              # checks both pages at 12 widths
+scripts/check-responsive <url>        # or a specific page
+```
+
+It drives headless Chrome over the DevTools protocol, sets a device viewport,
+and measures `documentElement.scrollWidth` against `clientWidth` at 320 through
+1920 px. Wide tables are allowed to exceed the viewport only when they sit inside
+a `.scroller` (horizontal scroll container) — that is the intended escape hatch,
+and the script distinguishes those from genuine page overflow.
+
 ## Layout
 
 ```
@@ -283,6 +299,7 @@ clockwork/
   sql/001_schema.sql  schema, append-only triggers, authority triggers
 tests/test_clockwork.py   26 invariant tests
 skill/                    Agent Skill: driving a case end to end
+scripts/check-responsive  real-browser layout overflow check
 web/templates/            evidence-clock dashboard
 ```
 

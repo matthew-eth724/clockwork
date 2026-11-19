@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+"""Measure real layout overflow across device widths using headless Chrome.
+
+Usage:
+    scripts/check-responsive [url] [more urls...]
+
+Defaults to the case dashboard and index on the default port. Requires
+google-chrome (or Chromium) and `websocket-client`.
+
+Exits non-zero if any width produces page-level horizontal scrolling.
+
+Why this exists: a page can *look* responsive in CSS and still force a phone to
+scroll sideways. Only a real layout engine knows. Wide tables are allowed to be
+wide only inside a `.scroller` (overflow-x:auto) — that is the intended escape
+hatch, and this script distinguishes those from genuine page overflow.
+"""
+import json
+import subprocess
+import sys
+import time
+import urllib.request
+
+import websocket
+
+URLS = sys.argv[1:] or [
+    "http://localhost:8899/case/CW-2026-0007",
+    "http://localhost:8899/",
+]
+WIDTHS = [320, 360, 375, 414, 480, 600, 768, 834, 1024, 1280, 1440, 1920]
+PORT = 9222
+
+PROBE = r"""
+(() => {
+  const de = document.documentElement;
+  const vw = de.clientWidth;
+  const offenders = [];
+  let allowed = 0;
+  for (const el of document.querySelectorAll('body *')) {
+    const r = el.getBoundingClientRect();
+    if (r.width === 0 || r.height === 0) continue;
+    if (r.right > vw + 1) {
+      const scroller = el.closest('.scroller');
+      const inScroller = !!scroller && scroller !== el;
+      if (inScroller) { allowed++; continue; }
+      offenders.push({
+        tag: el.tagName.toLowerCase(),
+        cls: (el.className || '').toString().slice(0, 40),
+        right: Math.round(r.right),
+        width: Math.round(r.width)
+      });
+    }
+  }
+  return JSON.stringify({
+    vw,
+    scrollWidth: de.scrollWidth,
+    pageOverflow: de.scrollWidth > vw + 1,
+    offenders: offenders.slice(0, 8),
+    allowed
+  });
+})()
+"""
+
+
+def start_chrome():
+    return subprocess.Popen(
+        ["google-chrome", "--headless=new", "--disable-gpu", "--no-sandbox",
+         f"--remote-debugging-port={PORT}", "--remote-allow-origins=*",
+         "--window-size=1440,900", "about:blank"],
+        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
+def ws_url():
+    for _ in range(40):
+        try:
+            tabs = json.load(urllib.request.urlopen(f"http://127.0.0.1:{PORT}/json"))
+            for t in tabs:
+                if t.get("type") == "page":
+                    return t["webSocketDebuggerUrl"]
+        except Exception:
+            pass
+        time.sleep(0.25)
+    raise RuntimeError("chrome did not expose a page target")
+
+
+def make_caller(ws):
+    msg_id = [0]
+
+    def call(method, **params):
+        msg_id[0] += 1
+        ws.send(json.dumps({"id": msg_id[0], "method": method, "params": params}))
+        while True:
+            data = json.loads(ws.recv())
+            if data.get("id") == msg_id[0]:
+                return data
+
+    return call
+
+
+def check_url(call, url):
+    failures = 0
+    print(f"URL: {url}")
+    print(f"{'width':>7}  {'viewport':>8}  {'scrollW':>7}  result")
+    print("-" * 72)
+    for w in WIDTHS:
+        call("Emulation.setDeviceMetricsOverride", width=w, height=900,
+             deviceScaleFactor=1, mobile=w < 768)
+        call("Page.navigate", url=url)
+        time.sleep(0.7)
+        res = call("Runtime.evaluate", expression=PROBE, returnByValue=True)
+        data = json.loads(res["result"]["result"]["value"])
+        ok = not data["pageOverflow"] and not data["offenders"]
+        if not ok:
+            failures += 1
+        print(f"{w:>7}  {data['vw']:>8}  {data['scrollWidth']:>7}  "
+              f"{'OK' if ok else 'OVERFLOW'}")
+        for o in data["offenders"]:
+            print(f"          -> <{o['tag']} class={o['cls']!r}> "
+                  f"right={o['right']} width={o['width']}")
+        if data["allowed"]:
+            print(f"          ({data['allowed']} element(s) scrolling inside "
+                  f"a .scroller - expected)")
+    print()
+    return failures
+
+
+def main():
+    proc = start_chrome()
+    try:
+        call = make_caller(websocket.create_connection(ws_url(), timeout=20))
+        call("Page.enable")
+        call("Runtime.enable")
+        total = sum(check_url(call, u) for u in URLS)
+        print("PASS" if total == 0 else f"FAIL ({total} width checks overflow)")
+        return 0 if total == 0 else 1
+    finally:
+        proc.terminate()
+
+
+if __name__ == "__main__":
+    sys.exit(main())
