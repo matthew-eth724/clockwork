@@ -229,6 +229,29 @@ docker exec clockwork-pg psql -U clockwork -d clockwork -c "DROP SCHEMA cw CASCA
 `case_event` refuses `TRUNCATE` by design; dropping the schema is the sanctioned
 reset.
 
+## Using it from an agent
+
+`skill/` is an [Agent Skill](https://agentskills.io) that teaches a coding agent
+to drive a case end to end: the gate ordering constraints, the API surface, and
+the failure modes that cost real debugging time.
+
+```bash
+# install for agents that read ~/.agents/skills
+cp -r skill ~/.agents/skills/clockwork-engineering
+
+# or point your agent at the path directly
+```
+
+`skill/scripts/clockwork-run` is a smoke-test CLI and resolves the repo root
+from its own location:
+
+```bash
+skill/scripts/clockwork-run health
+skill/scripts/clockwork-run gates CW-2026-0007 L1-export-idor
+skill/scripts/clockwork-run chain CW-2026-0007
+skill/scripts/clockwork-run start      # API + dashboard on :8899
+```
+
 ## Layout
 
 ```
@@ -249,7 +272,8 @@ clockwork/
   api.py              HTTP API + dashboard routes
   demo.py             end-to-end scenario
   sql/001_schema.sql  schema, append-only triggers, authority triggers
-tests/test_clockwork.py   24 invariant tests
+tests/test_clockwork.py   26 invariant tests
+skill/                    Agent Skill: driving a case end to end
 web/templates/            evidence-clock dashboard
 ```
 

@@ -1,0 +1,111 @@
+#!/usr/bin/env bash
+# clockwork-run — smoke-test and inspect a Clockwork Engineering install.
+#
+# Usage:
+#   clockwork-run health                 # is Postgres + schema reachable?
+#   clockwork-run demo                   # run the full end-to-end scenario
+#   clockwork-run gates <case> <lane>    # show gate state and what is missing
+#   clockwork-run chain <case>           # verify the event hash chain
+#   clockwork-run start                  # serve API + dashboard on :8899
+#   clockwork-run reset                  # drop the schema (dev only)
+
+set -euo pipefail
+
+# Resolve the repo root from this script's own location (skill/scripts/ -> ../../)
+_self="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CW_HOME="${CLOCKWORK_HOME:-$(cd "$_self/../.." && pwd)}"
+PY="${CW_HOME}/.venv/bin/python"
+PG_CONTAINER="${CLOCKWORK_PG_CONTAINER:-clockwork-pg}"
+PG_DB="${CLOCKWORK_PG_DB:-clockwork}"
+PG_USER="${CLOCKWORK_PG_USER:-clockwork}"
+PORT="${CLOCKWORK_PORT:-8899}"
+
+usage() { sed -n '2,12p' "$0" | sed 's/^# \{0,1\}//'; exit 1; }
+
+require_install() {
+  [[ -x "$PY" ]] || { echo "no venv at $PY — set CLOCKWORK_HOME" >&2; exit 1; }
+  cd "$CW_HOME"
+  export PYTHONPATH="$CW_HOME"
+}
+
+cmd="${1:-}"; [[ -n "$cmd" ]] || usage; shift || true
+
+case "$cmd" in
+  health)
+    require_install
+    if docker ps --format '{{.Names}}' | grep -qx "$PG_CONTAINER"; then
+      echo "postgres: up ($PG_CONTAINER)"
+    else
+      echo "postgres: DOWN — start with:"
+      echo "  docker start $PG_CONTAINER"
+      exit 1
+    fi
+    "$PY" - <<'EOF'
+from clockwork.runtime import Runtime
+rt = Runtime(); rt.boot()
+rows = rt.store.q("SELECT count(*) AS n FROM cw.shard_placement")
+print(f"schema:   ready ({rows[0]['n']} logical shards)")
+cases = rt.store.q("SELECT count(*) AS n FROM cw.case")
+print(f"cases:    {cases[0]['n']}")
+EOF
+    ;;
+
+  demo)
+    require_install
+    "$PY" -m clockwork.demo
+    ;;
+
+  gates)
+    require_install
+    case_id="${1:-}"; lane="${2:-}"
+    [[ -n "$case_id" && -n "$lane" ]] || { echo "usage: gates <case_id> <branch_id>" >&2; exit 1; }
+    "$PY" - "$case_id" "$lane" <<'EOF'
+import sys
+from clockwork.runtime import Runtime
+from clockwork.constants import GATE_LABELS, GATE_CHAIN
+rt = Runtime()
+case_id, lane = sys.argv[1], sys.argv[2]
+res = rt.evaluate(case_id, lane)
+print(f"{case_id} / {lane}: {res['state']}  (next gate: {res['next_gate'] or 'none'})")
+print()
+for gate in GATE_CHAIN:
+    g = res["gates"][gate]
+    mark = {"PASSED": "PASS", "FAILED": "FAIL"}.get(g["state"], "----")
+    print(f"  [{mark}] {GATE_LABELS[gate]}")
+    if g["state"] == "FAILED" and gate == res["next_gate"]:
+        for c in g["checks"]:
+            if not c["ok"]:
+                print(f"         · {c['check']}: {c['reason']}")
+EOF
+    ;;
+
+  chain)
+    require_install
+    case_id="${1:-}"
+    [[ -n "$case_id" ]] || { echo "usage: chain <case_id>" >&2; exit 1; }
+    "$PY" - "$case_id" <<'EOF'
+import sys
+from clockwork.runtime import Runtime
+ok, note = Runtime().store.verify_chain(sys.argv[1])
+print(("verified: " if ok else "BROKEN: ") + note)
+sys.exit(0 if ok else 1)
+EOF
+    ;;
+
+  start)
+    require_install
+    echo "serving http://localhost:$PORT/  (dashboard), /docs (API)"
+    exec "$PY" -m uvicorn clockwork.api:app --port "$PORT"
+    ;;
+
+  reset)
+    require_install
+    echo "dropping schema cw — this deletes all cases and events"
+    read -r -p "type YES to continue: " confirm
+    [[ "$confirm" == "YES" ]] || { echo "aborted"; exit 1; }
+    docker exec "$PG_CONTAINER" psql -U "$PG_USER" -d "$PG_DB" -c "DROP SCHEMA IF EXISTS cw CASCADE;"
+    "$PY" -c "from clockwork.runtime import Runtime; Runtime().boot(); print('schema rebuilt')"
+    ;;
+
+  *) usage ;;
+esac
