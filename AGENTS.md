@@ -103,12 +103,13 @@ order first.
   `projection.project()`. A type that is appended but not projected is a silent
   hole — it is still in the log, so the chain verifies and nothing looks wrong.
 
-  **Known gaps, do not rely on these yet:** `claim_supported`,
-  `claim_contradicted`, `report_packaged`, `experiment_dispatched` and
-  `case_parked` are appended and projected by *side effect* only (or not at all).
-  `support_claim()` in particular stores no `SUPPORTS` edge and does not mark the
-  claim supported — support is carried by the `supports=[...]` argument to
-  `add_evidence()`. If you need claim status, project these events first.
+  **Fixed:** `claim_supported` and `claim_contradicted` now project to real
+  `SUPPORTS`/`CONTRADICTS` edges and set claim status. They previously did
+  nothing, so `support_claim()` looked successful while leaving the claim
+  unsupported and the gate failing.
+
+  **Still unprojected:** `report_packaged`, `experiment_dispatched`,
+  `case_parked`. They are metadata with no gate consequence today.
 - Gate predicates live in `gates/predicates.py` as JSON, evaluated in
   `gates/engine.py`. New leaf forms need both a handler and a `_describe` entry,
   or the trace prints `all` and tells the reviewer nothing.

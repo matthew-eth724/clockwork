@@ -301,10 +301,16 @@ class Runtime:
     def support_claim(self, case_id: str, claim_id: str, evidence_ids: list[str],
                       actor: str, orbit: str = "attack") -> dict:
         facts = self.facts(case_id)
-        if facts.exists(claim_id):
-            self._assert_node_unsealed(facts, claim_id, actor)
-            self._assert_not_sealed_output(
-                facts, facts.node(claim_id).branch_id or "", actor)
+        target = facts.node(claim_id)
+        if target is None:
+            # Silently accepting an unknown claim id is how evidence ends up
+            # supporting nothing while the call looks successful.
+            raise GateError(f"cannot support {claim_id}: no such claim")
+        if target.kind not in ("claim", "assumption"):
+            raise GateError(
+                f"cannot support {claim_id}: it is a {target.kind}, not a claim")
+        self._assert_node_unsealed(facts, claim_id, actor)
+        self._assert_not_sealed_output(facts, target.branch_id or "", actor)
         for eid in evidence_ids:
             node = facts.node(eid)
             if not node or node.kind != "evidence":
@@ -318,10 +324,17 @@ class Runtime:
                          evidence_ids: list[str], actor: str,
                          orbit: str = "defense", reason: str = "") -> dict:
         facts = self.facts(case_id)
-        branch_id = getattr(facts.node(claim_id), "branch_id", None) \
-            if facts.node(claim_id) else None
+        target = facts.node(claim_id)
+        if target is None:
+            raise GateError(f"cannot contradict {claim_id}: no such claim")
+        branch_id = target.branch_id
         if branch_id:
             self._assert_not_sealed_output(facts, branch_id, actor)
+        for eid in evidence_ids:
+            node = facts.node(eid)
+            if not node or node.kind != "evidence":
+                raise GateError(
+                    f"cannot contradict {claim_id}: {eid} is not evidence")
         # Contradictory evidence can never be erased: only recorded and,
         # if genuinely refuted, *ruled out* with new evidence.
         return self._append(case_id, "claim_contradicted", actor, {

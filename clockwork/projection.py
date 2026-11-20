@@ -182,6 +182,35 @@ def project(events: list[dict]) -> Facts:
             if p.get("experiment_id"):
                 edge(p["experiment_id"], "TESTS", nid)
 
+        elif et in ("claim_supported", "claim_contradicted"):
+            # Attaching evidence to a claim must leave a visible edge and move
+            # the claim's status. Appending the event alone is not enough: the
+            # graph is what gates read, so an unprojected event is a silent
+            # no-op that still looks like success to the caller.
+            cid = p["claim_id"]
+            rel = "SUPPORTS" if et == "claim_supported" else "CONTRADICTS"
+            for eid in p.get("evidence_ids", []):
+                edge(eid, rel, cid, {"via": et})
+            claim = facts.nodes.get(cid)
+            if claim is not None:
+                supplied = list(p.get("evidence_ids", []))
+                if et == "claim_supported":
+                    cur = list(claim.attrs.get("supported_ev") or [])
+                    for eid in supplied:
+                        if eid not in cur:
+                            cur.append(eid)
+                    attrs = {**claim.attrs, "supported_ev": cur,
+                             "status": "supported"}
+                else:
+                    cur = list(claim.attrs.get("contradicted_ev") or [])
+                    for eid in supplied:
+                        if eid not in cur:
+                            cur.append(eid)
+                    attrs = {**claim.attrs, "contradicted_ev": cur,
+                             "status": "contradicted"}
+                object.__setattr__(claim, "attrs", attrs)
+                object.__setattr__(claim, "status", attrs["status"])
+
         elif et == "experiment_requested":
             nid = p["experiment_id"]
             add(FactNode(node_id=nid, kind="experiment", label=p["command"], seq=seq,

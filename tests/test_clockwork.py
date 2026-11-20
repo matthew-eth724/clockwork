@@ -463,3 +463,64 @@ def test_seeded_hypothesis_reaches_the_generated_report_summary(rt):
     summary = next(sec for sec in pkg["sections"]
                    if sec["section_id"] == "sec:summary")
     assert "ssrf into metadata service" in summary["body"]
+
+
+# ------------------------------------------- documented support path must work
+def test_support_claim_creates_supports_edge_and_backs_the_claim(rt):
+    """The documented way to attach evidence to a claim must actually link it.
+
+    Regression: support_claim() appended a claim_supported event that the
+    projection ignored, so the call succeeded, the log grew, and the claim stayed
+    unsupported. Callers got no error and the gate failed anyway.
+    """
+    cid = _case(rt)
+    atk = f"atk-{rt.suffix}"
+    rt.seed_candidate(cid, "L1", atk, "x", "repo", "a" * 40)
+    rt.propose_claim(cid, "L1", "c1", "the claim", atk)
+    rt.add_evidence(cid, "L1", "ev1", atk, kind="proof", commit_sha="a" * 40)
+
+    rt.support_claim(cid, "c1", ["ev1"], atk)
+
+    facts = rt.facts(cid)
+    edges = [(e.src_id, e.dst_id) for e in facts.edges_to("c1", "SUPPORTS")]
+    assert ("ev1", "c1") in edges, "support_claim did not create a SUPPORTS edge"
+    assert facts.node("c1").attrs.get("status") == "supported"
+
+
+def test_support_claim_satisfies_the_gate_that_requires_a_supports_edge(rt):
+    cid = _case(rt)
+    atk = f"atk-{rt.suffix}"
+    rt.seed_candidate(cid, "L1", atk, "x", "repo", "a" * 40)
+    rt.propose_claim(cid, "L1", "c1", "reachable", atk)
+    rt.add_evidence(cid, "L1", "ev-route", atk, kind="metadata",
+                    commit_sha="a" * 40, source_ref="app/routes.py:1")
+    rt.support_claim(cid, "c1", ["ev-route"], atk)
+    ev = rt.evaluate(cid, "L1")
+    checks = ev["gates"]["reachability"]["checks"]
+    support = [c for c in checks if c["check"] == "edge_exists"]
+    assert support and support[0]["ok"], support
+
+
+def test_support_claim_rejects_non_evidence_and_unknown_targets(rt):
+    cid = _case(rt)
+    atk = f"atk-{rt.suffix}"
+    rt.seed_candidate(cid, "L1", atk, "x", "repo", "a" * 40)
+    rt.propose_claim(cid, "L1", "c1", "c", atk)
+    rt.add_evidence(cid, "L1", "ev1", atk, kind="proof")
+    with pytest.raises(GateError):
+        rt.support_claim(cid, "c1", ["nope"], atk)
+    with pytest.raises(GateError):
+        rt.support_claim(cid, "claim-that-does-not-exist", ["ev1"], atk)
+
+
+def test_contradict_claim_creates_contradicts_edge(rt):
+    """Same class of bug: contradict_claim must also leave a visible edge."""
+    cid = _case(rt)
+    atk, dfn = f"atk-{rt.suffix}", f"def-{rt.suffix}"
+    rt.seed_candidate(cid, "L1", atk, "x", "repo", "a" * 40)
+    rt.propose_claim(cid, "L1", "c1", "c", atk)
+    rt.add_evidence(cid, "L1", "ev-def", dfn, kind="control", orbit="defense")
+    rt.contradict_claim(cid, "c1", ["ev-def"], dfn)
+    facts = rt.facts(cid)
+    assert ("ev-def", "c1") in [(e.src_id, e.dst_id)
+                                for e in facts.edges_to("c1", "CONTRADICTS")]
