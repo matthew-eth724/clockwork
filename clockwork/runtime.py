@@ -454,7 +454,8 @@ class Runtime:
             results[gate_id] = res.to_dict()
         return {"case_id": case_id, "branch_id": branch_id,
                 "state": self._proof_state(facts, branch_id), "gates": results,
-                "next_gate": next_gate(facts, branch_id)}
+                "next_gate": next_gate(facts, branch_id),
+                "inconsistencies": self.inconsistencies(case_id, branch_id)}
 
     def _proof_state(self, facts: Facts, branch_id: str) -> str:
         exps = facts.branch_nodes(branch_id, "experiment")
@@ -463,6 +464,26 @@ class Runtime:
         stale = bool(facts.branch_state.get(branch_id, {}).get("stale_reason"))
         return derive_proof_state(proof_passing=passing, gates_passed=gates,
                                   stale=stale)
+
+    def inconsistencies(self, case_id: str, branch_id: str) -> list[str]:
+        """States that should be impossible: a gate chain that is fully passed
+        while the underlying proof does not stand. Surfaced rather than hidden —
+        a silently contradictory lane is how people ship unproven findings.
+        """
+        facts = self.facts(case_id)
+        found: list[str] = []
+        exps = facts.branch_nodes(branch_id, "experiment")
+        passing = [e for e in exps if e.attrs.get("outcome") == "pass"]
+        all_gates = all(facts.gate_state(branch_id, g) == "PASSED"
+                        for g in GATE_CHAIN)
+        if all_gates and not passing:
+            pending = [e.node_id for e in exps
+                       if e.attrs.get("outcome") == "pending"]
+            found.append(
+                f"all {len(GATE_CHAIN)} gates are PASSED but no experiment has "
+                f"outcome=pass (pending: {pending}); local_proof was asserted "
+                f"without a recorded run")
+        return found
 
     def decide_gate(self, case_id: str, branch_id: str, gate_id: str, actor: str,
                     decision: str = "pass", note: str = "") -> dict:

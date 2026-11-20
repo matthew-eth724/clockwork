@@ -64,9 +64,28 @@ class Facts:
     def of_kind(self, kind: str) -> list[FactNode]:
         return [n for n in self.nodes.values() if n.kind == kind]
 
-    def branch_nodes(self, branch_id: str, kind: str | None = None) -> list[FactNode]:
+    def inherited_ids(self, branch_id: str) -> set[str]:
+        """Nodes a fork inherited from its parent.
+
+        Inheritance is expressed as ``child DEPENDS_ON node`` with
+        ``kind=inheritance``, so the parent keeps sole ownership and the child
+        gains visibility without any node being moved or copied.
+        """
+        return {e.dst_id for e in self.live_edges("DEPENDS_ON")
+                if e.src_id == branch_id and e.attrs.get("kind") == "inheritance"}
+
+    def branch_nodes(self, branch_id: str, kind: str | None = None,
+                     include_inherited: bool = True) -> list[FactNode]:
+        """Nodes visible on a lane, including anything it inherited by forking."""
+        inherited = self.inherited_ids(branch_id) if include_inherited else set()
         return [n for n in self.nodes.values()
-                if n.branch_id == branch_id and (kind is None or n.kind == kind)]
+                if (n.branch_id == branch_id or n.node_id in inherited)
+                and (kind is None or n.kind == kind)]
+
+    def owns(self, branch_id: str, node_id: str) -> bool:
+        """True when the lane authored the node, as opposed to inheriting it."""
+        n = self.nodes.get(node_id)
+        return bool(n and n.branch_id == branch_id)
 
     def live_edges(self, rel: str | None = None) -> list[FactEdge]:
         return [e for e in self.edges

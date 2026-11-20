@@ -98,6 +98,13 @@ order first.
 
 ## Conventions
 
+- `branch_nodes()` includes inherited nodes. Use `owns()` when you need
+  authorship specifically (reports, provenance). A fork inherits its parent's
+  claims/assumptions/evidence/controls/experiments as `DEPENDS_ON` edges with
+  `kind=inheritance`; it inherits no gates, seals or kills.
+- `projection.edge()` dedupes on `(src, rel, dst)`, matching the UNIQUE constraint
+  on `cw.edge`. Two write paths can express the same link; without dedupe every
+  count over `facts.edges` double-counts. Do not remove that guard.
 - Canonical JSON for anything hashed (`store.canonical_json`).
 - Any new event type must be added to `constants.EVENT_TYPES` *and* handled in
   `projection.project()`. A type that is appended but not projected is a silent

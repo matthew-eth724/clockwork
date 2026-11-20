@@ -524,3 +524,84 @@ def test_contradict_claim_creates_contradicts_edge(rt):
     facts = rt.facts(cid)
     assert ("ev-def", "c1") in [(e.src_id, e.dst_id)
                                 for e in facts.edges_to("c1", "CONTRADICTS")]
+
+
+# ------------------------------------------------- duplicate edges / fork lineage
+def test_duplicate_edge_from_two_write_paths_is_not_double_counted(rt):
+    """claim_supported and edge_added can express the same link.
+
+    Facts.edges is a list with no dedupe, so the same (src, rel, dst) arriving by
+    two paths appears twice and inflates any count a gate or report relies on.
+    The database has a UNIQUE constraint; the in-memory projection did not.
+    """
+    cid = _case(rt)
+    atk = f"atk-{rt.suffix}"
+    rt.seed_candidate(cid, "L1", atk, "x", "repo", "a" * 40)
+    rt.propose_claim(cid, "L1", "c1", "c", atk)
+    rt.add_evidence(cid, "L1", "ev1", atk, kind="proof")
+    rt.support_claim(cid, "c1", ["ev1"], atk)
+    rt._append(cid, "edge_added", atk,
+               {"src_id": "ev1", "rel": "SUPPORTS", "dst_id": "c1"}, orbit="attack")
+
+    facts = rt.facts(cid)
+    edges = [e for e in facts.live_edges("SUPPORTS")
+             if e.src_id == "ev1" and e.dst_id == "c1"]
+    assert len(edges) == 1, f"duplicate SUPPORTS edges: {len(edges)}"
+
+
+def test_fork_inherits_parents_evidence_claims_and_assumptions(rt):
+    """A fork exists to try a variant. If it inherits nothing it is an empty
+    shell and every gate restarts from zero, which makes forking useless."""
+    cid = _case(rt)
+    atk = f"atk-{rt.suffix}"
+    rt.seed_candidate(cid, "L1", atk, "x", "repo", "a" * 40)
+    rt.propose_claim(cid, "L1", "c1", "shared claim", atk)
+    rt.add_evidence(cid, "L1", "ev1", atk, kind="metadata", commit_sha="a" * 40)
+    rt.declare_assumption(cid, "L1", "a1", "cache absent", atk,
+                          falsifiable_by=["cache dump"])
+
+    rt.fork_branch(cid, "L1", "L1-fork", atk, "variant")
+    facts = rt.facts(cid)
+
+    inherited = {n.node_id for n in facts.branch_nodes("L1-fork")}
+    assert "c1" in inherited, "fork did not inherit the parent's claim"
+    assert "ev1" in inherited, "fork did not inherit the parent's evidence"
+    assert "a1" in inherited, "fork did not inherit the parent's assumption"
+
+    # inheritance is recorded as provenance, not by rewriting the parent
+    assert facts.node("ev1").branch_id == "L1", "parent evidence was moved, not copied"
+    lin = [e for e in facts.live_edges("DEPENDS_ON")
+           if e.src_id == "L1-fork" and e.dst_id == "L1"]
+    assert lin, "fork has no lineage edge to its parent"
+
+
+def test_fork_does_not_inherit_parent_sealed_or_killed_status(rt):
+    """Inheritance shares evidence, not verdicts: a fork must still prove its own
+    gates."""
+    cid = _case(rt)
+    atk = f"atk-{rt.suffix}"
+    rt.seed_candidate(cid, "L1", atk, "x", "repo", "a" * 40)
+    rt.propose_claim(cid, "L1", "c1", "c", atk)
+    rt.add_evidence(cid, "L1", "ev1", atk, kind="proof", commit_sha="a" * 40)
+    rt.fork_branch(cid, "L1", "L1-fork", atk, "variant")
+    ev = rt.evaluate(cid, "L1-fork")
+    assert ev["state"] != "GREEN", "fork inherited a verdict it did not earn"
+    assert ev["next_gate"] == "scope_admission"
+
+
+def test_fully_passed_gates_without_a_passing_experiment_is_reported(rt):
+    """A lane can look finished while its proof never ran. Do not hide that."""
+    cid = _case(rt)
+    atk = f"atk-{rt.suffix}"
+    rt.seed_candidate(cid, "L1", atk, "x", "repo", "a" * 40)
+    rt.request_experiment(cid, "L1", "e1", "make repro", "local", "200", atk,
+                          tests=["c1"], commit_sha="a" * 40, controls=["c"])
+    # never complete it
+    for gate in GATE_CHAIN:
+        try:
+            rt.decide_gate(cid, "L1", gate, "human:rev")
+        except (GateError, AuthorityError):
+            pass
+    ev = rt.evaluate(cid, "L1")
+    if ev["next_gate"] is None:
+        assert ev["inconsistencies"], "passed gate chain with no proof was not flagged"

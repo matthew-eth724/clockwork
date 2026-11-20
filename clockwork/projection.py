@@ -82,9 +82,22 @@ def project(events: list[dict]) -> Facts:
                 object.__setattr__(node, "orbit", existing.orbit)
             facts.nodes[node.node_id] = node
 
+        # (src, rel, dst) is unique per case, matching the UNIQUE constraint on
+        # cw.edge. Two write paths can express the same link (claim_supported and
+        # an explicit edge_added), so dedupe here or every count that walks
+        # facts.edges double-counts.
+        edge_index: set[tuple[str, str, str]] = set()
+        for _e in facts.edges:
+            edge_index.add((_e.src_id, _e.rel, _e.dst_id))
+
         def edge(src, rel, dst, attrs=None, produced_by=None, retired_seq=None):
             if rel not in VALID_RELATIONS:
                 raise ValueError(f"unknown relationship {rel!r}")
+            key = (src, rel, dst)
+            if key in edge_index:
+                # already recorded: keep the original provenance and sequence
+                return
+            edge_index.add(key)
             facts.edges.append(FactEdge(src_id=src, rel=rel, dst_id=dst, seq=seq,
                                         produced_by=produced_by or actor,
                                         attrs=attrs or {},
@@ -281,12 +294,25 @@ def project(events: list[dict]) -> Facts:
         elif et == "branch_forked":
             parent = p["parent_branch_id"]
             child = p["branch_id"]
+            # What a fork inherits: the parent's *content* (claims, assumptions,
+            # evidence, controls, experiments) so a variant does not restart from
+            # an empty graph. What it must NOT inherit: gate decisions, seals or
+            # kills — a fork still has to prove its own case.
+            inherit_kinds = p.get("inherit_kinds")
+            if inherit_kinds is None:
+                inherit_kinds = ["claim", "assumption", "evidence", "control",
+                                 "experiment"]
+            inherited = [n.node_id for n in facts.nodes.values()
+                         if n.branch_id == parent and n.kind in inherit_kinds]
             add(FactNode(node_id=child, kind="branch", label=p.get("label", child),
                          seq=seq, branch_id=child, orbit=orbit,
                          attrs={"parent": parent,
                                 "fork_reason": p.get("reason", ""),
-                                "forked_at_gate": p.get("at_gate")}))
+                                "forked_at_gate": p.get("at_gate"),
+                                "inherited": inherited}))
             edge(child, "DEPENDS_ON", parent, {"kind": "fork"})
+            for nid in inherited:
+                edge(child, "DEPENDS_ON", nid, {"kind": "inheritance"})
 
         elif et == "branch_merged":
             src, dst = p["source_branch_id"], p["target_branch_id"]

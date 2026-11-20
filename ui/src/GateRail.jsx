@@ -37,6 +37,13 @@ export function GateRail({ branchId, evaluation, gateChain, gateLabels }) {
           next: <code>{nextGate ?? 'complete'}</code>
         </span>
       </header>
+      {(evaluation?.inconsistencies ?? []).length > 0 && (
+        <p className="notice error small">
+          {evaluation.inconsistencies.map((m) => (
+            <span key={m}>{m}</span>
+          ))}
+        </p>
+      )}
       <ol className="rail">
         {gateChain.map((gate) => {
           const st = evaluation?.gates?.[gate]?.state ?? 'PENDING'
